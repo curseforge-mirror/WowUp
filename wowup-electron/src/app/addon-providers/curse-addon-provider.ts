@@ -54,6 +54,8 @@ interface ScanMatchPair {
 
 const CHANGELOG_CACHE_TTL_SEC = 30 * 60;
 const FEATURED_ADDONS_CACHE_TTL_SEC = AppConfig.featuredAddonsCacheTimeSec;
+// The client refuses an empty key. Without a real one the provider stays disabled (src/app/mirror/mirror.ts).
+const NO_API_KEY = "none";
 
 const GAME_TYPE_LISTS = [
   {
@@ -100,8 +102,8 @@ const GAME_TYPE_LISTS = [
 
 export class CurseAddonProvider extends AddonProvider {
   private readonly _circuitBreaker: CircuitBreakerWrapper;
-  private readonly _cf2Client: cfv2.CFV2Client;
-  private readonly _cf2ApiKey = AppConfig.curseforge.apiKey;
+  private _cf2Client: cfv2.CFV2Client;
+  private _cf2ApiKey = AppConfig.curseforge.apiKey;
 
   public readonly name = ADDON_PROVIDER_CURSEFORGE;
   public readonly forceIgnore = false;
@@ -127,8 +129,15 @@ export class CurseAddonProvider extends AddonProvider {
     );
 
     this._cf2Client = new cfv2.CFV2Client({
-      apiKey: this._cf2ApiKey,
+      apiKey: this._cf2ApiKey || NO_API_KEY,
     });
+  }
+
+  /** Swaps in a user-supplied API key at runtime, see src/app/mirror/mirror.ts */
+  public setApiKey(apiKey: string): void {
+    this._cf2ApiKey = apiKey;
+    this._cf2Client = new cfv2.CFV2Client({ apiKey: apiKey || NO_API_KEY });
+    this._circuitBreaker.close();
   }
 
   public override async getAllBatch(installations: WowInstallation[], addonIds: string[]): Promise<GetAllBatchResult> {

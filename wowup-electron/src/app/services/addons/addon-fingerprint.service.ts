@@ -3,6 +3,7 @@ import { AddonFolder } from "wowup-lib-core";
 import { AddonScanSource } from "../../../common/models/addon-scan";
 import { AddonScanApiService } from "../api/addon-scan-api.service";
 import { AppConfig } from "../../../environments/environment";
+import { MIRROR_CURSEFORGE_PROVIDER } from "../../mirror/mirror";
 
 @Injectable({
   providedIn: "root",
@@ -14,7 +15,7 @@ export class AddonFingerprintService {
     const filePaths = addonFolders.map((addonFolder) => addonFolder.path);
 
     const sources: AddonScanSource[] = ["wowup"];
-    if (AppConfig.curseforge.enabled) {
+    if (AppConfig.curseforge.enabled || MIRROR_CURSEFORGE_PROVIDER) {
       sources.push("curseforge");
     }
 
@@ -29,7 +30,7 @@ export class AddonFingerprintService {
 
       af.wowUpScanResults = result?.wowup;
 
-      if (AppConfig.curseforge.enabled) {
+      if (AppConfig.curseforge.enabled || MIRROR_CURSEFORGE_PROVIDER) {
         af.cfScanResults = result?.curseforge;
       }
     });

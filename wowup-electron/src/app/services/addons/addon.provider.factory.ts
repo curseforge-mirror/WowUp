@@ -23,6 +23,7 @@ import { WowUpAddonProvider, WowInterfaceAddonProvider, TukUiAddonProvider } fro
 import { AppConfig } from "../../../environments/environment";
 import { GenericNetworkInterface } from "../../business-objects/generic-network-interface";
 import { WagoAddonProvider } from "../../addon-providers/wago-addon-provider";
+import { applyMirrorProviderRules, MIRROR_CURSEFORGE_PROVIDER } from "../../mirror/mirror";
 
 @Injectable({
   providedIn: "root",
@@ -93,7 +94,7 @@ export class AddonProviderFactory {
       providers.push(this.createWagoAddonProvider());
     }
 
-    if (AppConfig.curseforge.enabled) {
+    if (AppConfig.curseforge.enabled || MIRROR_CURSEFORGE_PROVIDER) {
       providers.push(this.createCurseProvider());
     }
 
@@ -107,6 +108,13 @@ export class AddonProviderFactory {
       await this.setProviderState(provider);
       this._providerMap.set(provider.name, provider);
     }
+
+    await applyMirrorProviderRules({
+      providers: this._providerMap,
+      sensitiveStorage: this._sensitiveStorageService,
+      restoreState: this.setProviderState,
+      notify: (provider) => this._addonProviderChangeSrc.next(provider),
+    });
   }
 
   public async shouldShowConsentDialog(): Promise<boolean> {
