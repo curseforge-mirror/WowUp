@@ -35,6 +35,12 @@ TSA_URL=http://ts.ssl.com
 
 console.log(`SIGNING FOR WINDOWS ${isNonProd ? "NON-PROD" : "PROD"} BUILD`);
 function sign(configuration) {
+  // curseforge-mirror: builds are unsigned unless signing credentials are provided
+  if (!process.env.WINDOWS_SIGN_CREDENTIAL_ID_PROD) {
+    console.log(`No signing credentials, leaving ${configuration.path} unsigned`);
+    return;
+  }
+
   // if (isNonProd) {
   //   setNonProdConfig();
   // }

@@ -9,7 +9,7 @@ const fs = require("node:fs");
 const path = require("path");
 
 const FLAVORS = {
-  wago: { name: "wowup", productName: "WowUp", repository: "https://github.com/WowUp/WowUp.git" },
+  wago: { name: "wowup", productName: "WowUp", repository: "https://github.com/curseforge-mirror/WowUp.git" },
   ow: { name: "wowup-cf", productName: "WowUpCf", repository: "https://github.com/WowUp/WowUp.CF.git" },
 };
 

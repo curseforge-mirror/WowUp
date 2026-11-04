@@ -7,10 +7,7 @@ import { BundlePublicKeys } from "../contract/bundle-manifest";
  * Signatures aren't checked until bundle loading lands.
  */
 export const BUNDLE_PUBLIC_KEYS: BundlePublicKeys = {
-  // Current signing key
-  "2026-a":
-    "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEANmNszz8cMRnzc9BGH0YLh+bCQalgKH6jguz0orAXrGc=\n-----END PUBLIC KEY-----\n",
-  // Next signing key, kept offline until a rotation
-  "2027-a":
-    "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAUUjA3hQhh3VqvycvrnXs+6cb3+yWG1aP7Lrbr53anhg=\n-----END PUBLIC KEY-----\n",
+  // curseforge-mirror signing key; WowUp's keys are dropped so the shell never loads a stock bundle
+  "mirror-2026-a":
+    "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA7pm1qGBCjTPGdtcagMWx8ORZZp297fR9e8UzcjqeHUE=\n-----END PUBLIC KEY-----\n",
 };

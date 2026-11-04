@@ -57,7 +57,8 @@ function getUpdateUrls() {
     console.warn(`This shell checks for bundle updates at ${override.join(", ")} (BUNDLE_UPDATE_URL)`);
     return override;
   }
-  return isLocalBuild() ? [LOCAL_UPDATE_URL] : [RELEASE_UPDATE_URL];
+  // curseforge-mirror: no remote bundle updates, every release ships its bundle in the installer
+  return isLocalBuild() ? [LOCAL_UPDATE_URL] : [];
 }
 
 async function build() {
