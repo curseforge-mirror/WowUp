@@ -53,6 +53,7 @@ import { getAssetPath, getBundleDir, getPreloadPath, getRendererIndexPath } from
 
 import { validateGpuCache } from "./utils/gpu-cache-buster";
 import { AppEnv } from "./env/environment";
+import { blockAds } from "./mirror/block-ads";
 
 // Started by the wowup-shell bootstrap, which has already set up logging, taken the single instance lock and
 // registered the protocol handler.
@@ -179,6 +180,8 @@ function getProtocol(arg: string) {
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
 // Added 400 ms to fix the black background issue while using transparent window. More details at https://github.com/electron/electron/issues/15947
+blockAds();
+
 app
   .whenReady()
   .then(() => {

@@ -13,6 +13,7 @@ import { AddonService } from "../addons/addon.service";
 import { AddonProviderFactory } from "../addons/addon.provider.factory";
 import { WowUpService } from "../wowup/wowup.service";
 import { WowInstallation } from "wowup-lib-core";
+import { MIRROR_ADS_ENABLED } from "../../mirror/mirror";
 
 @Injectable({
   providedIn: "root",
@@ -113,7 +114,7 @@ export class SessionService {
 
   private updateAdSpace() {
     const allProviders = this._addonProviderService.getEnabledAddonProviders();
-    this._adSpaceSrc.next(allProviders.findIndex((p) => p.adRequired) !== -1);
+    this._adSpaceSrc.next(MIRROR_ADS_ENABLED && allProviders.findIndex((p) => p.adRequired) !== -1);
   }
 
   public get wowUpAuthToken(): string {
