@@ -40,8 +40,15 @@ Builds rewrite `wowup-electron/app/env/environment.ts` and `wowup-shell/package.
 
 ## Releasing
 
-Run the **Mirror release (Windows)** workflow from the Actions tab. It drafts a release for the version in
-`wowup-electron/package.json`. Publish the draft and installed apps pick it up.
+Every push to `mirror` builds and publishes a release (**Mirror release (Windows)**; it can also be run from the
+Actions tab), and installed apps update from it. The version is set at build time and never committed: upstream's
+MAJOR.MINOR, with PATCH = upstream patch × 1000 + the workflow's run number (2.25.4 → 2.25.4002, 2.25.4003, …), so it
+always increases, across upstream bumps too. Don't rename the workflow file: that restarts the run number. The
+installers are unsigned (no code-signing certificate), so Windows SmartScreen warns on a first install.
+
+People who install the fork bring their own keys, in **Options → Addons**: a CurseForge API key from
+[console.curseforge.com](https://console.curseforge.com/), and optionally a Wago access key (Wago Patreon). Each
+provider stays off until it has a key.
 
 The workflow needs the `BUNDLE_SIGNING_KEY` (PEM) and `BUNDLE_SIGNING_KEY_ID` (`mirror-2026-a`) secrets. The private
 key also lives in `~/.wowup-mirror/`. If it's ever lost, generate a new one with

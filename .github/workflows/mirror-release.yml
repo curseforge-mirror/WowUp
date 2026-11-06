@@ -1,13 +1,22 @@
 name: Mirror release (Windows)
 
-# curseforge-mirror: builds the unsigned Windows installers for the version in wowup-electron/package.json and
-# uploads them to a draft GitHub release on this repo. Publishing the draft is what installed apps update from.
-# Manual on purpose: a tag trigger on a fork can fire for every upstream tag that gets pushed.
+# curseforge-mirror: every push to the mirror branch builds the Windows installers and publishes them as a release on
+# this repo, which installed apps update from. The version is worked out here and never committed, so upstream merges
+# stay conflict-free: upstream's MAJOR.MINOR, and PATCH = upstream patch * 1000 + this workflow's run number
+# (2.25.4 -> 2.25.4002, 2.25.4003, ...). It only ever goes up, also across upstream bumps. Keep this file's name:
+# renaming it restarts the run number.
 on:
+  push:
+    branches: [mirror]
   workflow_dispatch:
 
 permissions:
   contents: write
+
+# One release at a time, in push order
+concurrency:
+  group: mirror-release
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -16,6 +25,8 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Checkout
@@ -26,24 +37,31 @@ jobs:
         with:
           node-version: 24.x
 
-      # electron-builder uploads the installers in parallel, and each upload creates the release when it can't see
-      # one yet, so the first run left two drafts. A draft made here first is the one every upload finds.
-      - name: Create the draft release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set the version
         run: |
-          version=$(node -p "require('./wowup-electron/package.json').version")
-          existing=$(gh api "repos/$GITHUB_REPOSITORY/releases" --jq ".[] | select(.tag_name == \"v$version\") | .id")
+          base=$(node -p "require('./wowup-electron/package.json').version")
+          IFS=. read -r major minor patch <<< "${base%%-*}"
+          version="$major.$minor.$((patch * 1000 + GITHUB_RUN_NUMBER))"
+          # Written straight into package.json: `npm version` would run upstream's changelog script
+          node -e "const fs = require('fs'), f = 'wowup-electron/package.json', p = JSON.parse(fs.readFileSync(f, 'utf8'));
+            p.version = process.argv[1]; fs.writeFileSync(f, JSON.stringify(p, null, 2) + '\n');" "$version"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "Building $version (upstream $base, run $GITHUB_RUN_NUMBER)"
+
+      # electron-builder uploads the installers in parallel, and each upload creates the release when it can't see
+      # one yet (the first manual run left two drafts). A draft made here first is the one every upload finds.
+      - name: Create the draft release
+        run: |
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/releases" --jq ".[] | select(.tag_name == \"v$VERSION\") | .id")
           if [ -n "$existing" ]; then
-            echo "release v$version already exists: $existing"
+            echo "release v$VERSION already exists: $existing"
           else
-            gh api "repos/$GITHUB_REPOSITORY/releases" -f tag_name="v$version" -f target_commitish="$GITHUB_REF_NAME" \
-              -f name="$version" -F draft=true --jq '"created draft \(.id) for \(.tag_name)"'
+            gh api "repos/$GITHUB_REPOSITORY/releases" -f tag_name="v$VERSION" -f target_commitish="$GITHUB_SHA" \
+              -f name="$VERSION" -F draft=true -F generate_release_notes=true --jq '"created draft \(.id) for \(.tag_name)"'
           fi
 
       - name: Build and upload
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BUNDLE_SIGNING_KEY: ${{ secrets.BUNDLE_SIGNING_KEY }}
           BUNDLE_SIGNING_KEY_ID: ${{ secrets.BUNDLE_SIGNING_KEY_ID }}
         run: |
@@ -51,3 +69,15 @@ jobs:
           cd ../wowup-shell && npm ci
           cd ../wowup-electron && npm install && npm run lint && npm run build:prod
           cd ../wowup-shell && npm run electron:publish
+
+      # Installed apps only see published releases
+      - name: Publish the release
+        run: |
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --jq ".[] | select(.tag_name == \"v$VERSION\") | .id")
+          assets=$(gh api "repos/$GITHUB_REPOSITORY/releases/$id" --jq '[.assets[].name] | join(", ")')
+          case "$assets" in
+            *latest.yml*) ;;
+            *) echo "release v$VERSION has no latest.yml (assets: $assets); not publishing"; exit 1 ;;
+          esac
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$id" -F draft=false -f make_latest=true \
+            --jq '"published \(.tag_name): \(.html_url)"'
