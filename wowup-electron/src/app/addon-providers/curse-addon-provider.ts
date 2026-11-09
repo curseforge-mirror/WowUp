@@ -919,14 +919,20 @@ export class CurseAddonProvider extends AddonProvider {
   }
 
   private async searchBySlug(slug: string, clientType: WowClientType): Promise<AddonSearchResult | undefined> {
-    const searchWord = _.first(slug.split("-"));
-    if (!searchWord) {
-      throw new Error("Invalid slug");
+    // Mirror: ask CurseForge for the slug itself first. The word search below reads one page of results, and on
+    // Forever thousands of add-ons share a first word ("forever-quest-mark" was nowhere on page one).
+    let match = await this.getAddonBySlug(slug);
+
+    if (!match) {
+      const searchWord = _.first(slug.split("-"));
+      if (!searchWord) {
+        throw new Error("Invalid slug");
+      }
+
+      const response = await this.getSearchResults(searchWord, clientType);
+      match = _.find(response, (res) => res.slug === slug);
     }
 
-    const response = await this.getSearchResults(searchWord, clientType);
-
-    const match = _.find(response, (res) => res.slug === slug);
     if (!match) {
       throw new Error(NO_SEARCH_RESULTS_ERROR);
     }
@@ -937,6 +943,15 @@ export class CurseAddonProvider extends AddonProvider {
     }
 
     return this.getAddonSearchResult(match, latestFiles);
+  }
+
+  /** The API's slug filter, which with classId 1 (WoW add-ons) names a single project; curseforge-v2 omits it from its types. */
+  private async getAddonBySlug(slug: string): Promise<cfv2.CF2Addon | undefined> {
+    const request: cfv2.CF2SearchModsParams & { slug: string } = { gameId: 1, classId: 1, slug };
+
+    const response = await this._circuitBreaker.fire(() => this._cf2Client.searchMods(request));
+
+    return _.find(response.data?.data ?? [], (res) => res.slug === slug);
   }
 
   private async getCategoryAddons(

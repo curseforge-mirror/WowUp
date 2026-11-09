@@ -1,7 +1,8 @@
 /* eslint-disable @typescript-eslint/no-unsafe-argument */
 import * as cfv2 from "curseforge-v2";
-import { AddonDependencyType, AddonSearchResult } from "wowup-lib-core";
+import { AddonDependencyType, AddonSearchResult, WowClientType, WowInstallation } from "wowup-lib-core";
 
+import { NO_SEARCH_RESULTS_ERROR } from "../../common/constants";
 import { CachingService } from "../services/caching/caching-service";
 import { NetworkService } from "../services/network/network.service";
 import { TocService } from "../services/toc/toc.service";
@@ -95,6 +96,61 @@ describe("CurseAddonProvider", () => {
           folders: ["Baganator"],
         }),
       );
+    });
+  });
+
+  describe("install from a CurseForge link", () => {
+    const FOREVER = 88568;
+    const installation = { clientType: WowClientType.Forever } as WowInstallation;
+    const url = new URL("https://www.curseforge.com/wow/addons/forever-quest-mark");
+
+    function listing(id: number, slug: string): cfv2.CF2Addon {
+      const file = {
+        ...createFile([]),
+        id: id * 10,
+        sortableGameVersions: [{ gameVersionTypeId: FOREVER }],
+      } as unknown as cfv2.CF2File;
+      return { ...createAddon(), id, slug, name: slug, latestFiles: [file] } as unknown as cfv2.CF2Addon;
+    }
+
+    // A first page of 50 "forever" add-ons that doesn't contain the one in the link, as the live API returns.
+    const firstPageForForever = Array.from({ length: 50 }, (_, i) => listing(2000 + i, `forever-other-${i}`));
+    const target = listing(1702963, "forever-quest-mark");
+
+    let requests: cfv2.CF2SearchModsParams[];
+
+    function stubSearch(answer: (params: Record<string, unknown>) => cfv2.CF2Addon[]): void {
+      requests = [];
+      (provider as any)._circuitBreaker = { fire: (action: () => unknown) => action() };
+      (provider as any)._cf2Client = {
+        searchMods: (params: cfv2.CF2SearchModsParams) => {
+          requests.push(params);
+          return Promise.resolve({ statusCode: 200, data: { data: answer(params as Record<string, unknown>) } });
+        },
+      };
+    }
+
+    it("should find an add-on whose first slug word matches thousands of others", async () => {
+      stubSearch((params) => (params.slug === "forever-quest-mark" ? [target] : firstPageForForever));
+
+      const result = await provider.searchByUrl(url, installation);
+
+      expect(result?.searchResult?.externalId).toBe("1702963");
+    });
+
+    it("should fall back to the word search when the slug lookup returns nothing", async () => {
+      stubSearch((params) => (params.slug ? [] : [...firstPageForForever, target]));
+
+      const result = await provider.searchByUrl(url, installation);
+
+      expect(result?.searchResult?.externalId).toBe("1702963");
+      expect(requests.some((r) => r.searchFilter === "forever")).toBeTrue();
+    });
+
+    it("should still report no results when neither lookup finds the slug", async () => {
+      stubSearch(() => firstPageForForever);
+
+      await expectAsync(provider.searchByUrl(url, installation)).toBeRejectedWithError(NO_SEARCH_RESULTS_ERROR);
     });
   });
 });
