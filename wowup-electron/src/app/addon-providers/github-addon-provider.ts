@@ -66,6 +66,11 @@ const HEADER_RATE_LIMIT_REMAINING = "x-ratelimit-remaining";
 const HEADER_RATE_LIMIT_RESET = "x-ratelimit-reset";
 const HEADER_RATE_LIMIT_USED = "x-ratelimit-used";
 
+// Mirror: long enough to span one update check across every installation, short enough that a new release shows up.
+const RESPONSE_REUSE_MS = 2 * 60 * 1000;
+// Mirror: upstream checked 3 repositories at a time; each takes three requests in a row.
+const GET_ALL_CONCURRENCY = 8;
+
 export class GitHubAddonProvider extends AddonProvider {
   public readonly name = ADDON_PROVIDER_GITHUB;
   public readonly forceIgnore = false;
@@ -74,6 +79,8 @@ export class GitHubAddonProvider extends AddonProvider {
   public readonly allowEdit = false;
   public readonly allowReScan = false;
   public enabled = true;
+
+  private readonly _responses = new Map<string, { at: number; response: Promise<unknown> }>();
 
   public constructor(
     private _httpClient: HttpClient,
@@ -99,7 +106,7 @@ export class GitHubAddonProvider extends AddonProvider {
   public async getAll(installation: WowInstallation, addonIds: string[]): Promise<GetAllResult> {
     const taskResults = await firstValueFrom(
       from(addonIds).pipe(
-        mergeMap((addonId) => from(this.handleGetAllItem(addonId, installation)), 3),
+        mergeMap((addonId) => from(this.handleGetAllItem(addonId, installation)), GET_ALL_CONCURRENCY),
         toArray(),
       ),
     );
@@ -344,10 +351,11 @@ export class GitHubAddonProvider extends AddonProvider {
       throw new Error("No metadata asset found");
     }
 
-    const hasPat = await this.hasPersonalAccessKey();
-    const url = metadataAsset.browser_download_url || metadataAsset.url;
+    // Mirror: the API asset endpoint, as downloads use. browser_download_url, the website's download link, took
+    // about 10 seconds per file and returned 504s under load, and update checks fetch one per BigWigs-packaged addon.
+    const url = metadataAsset.url || metadataAsset.browser_download_url;
 
-    return await this.getWithRateLimit<ReleaseMeta>(url, hasPat);
+    return await this.getWithRateLimit<ReleaseMeta>(url, true);
   }
 
   /** Check if any of the assets are the BigWigs metadata json file */
@@ -571,11 +579,6 @@ export class GitHubAddonProvider extends AddonProvider {
     return parseInt(headers.get(key) ?? "", 10);
   }
 
-  private async hasPersonalAccessKey(): Promise<boolean> {
-    const pat = await this._sensitiveStorageService.getAsync(PREF_GITHUB_PERSONAL_ACCESS_TOKEN);
-    return typeof pat === "string" && pat.length > 0;
-  }
-
   private async getAuthorizationHeader(): Promise<{ [param: string]: string }> {
     const personalAccessToken = await this._sensitiveStorageService.getAsync(PREF_GITHUB_PERSONAL_ACCESS_TOKEN);
     const headers: { [param: string]: string } = {};
@@ -586,7 +589,36 @@ export class GitHubAddonProvider extends AddonProvider {
     return headers;
   }
 
-  private async getWithRateLimit<T>(url: URL | string, expectBinary = false): Promise<T> {
+  /**
+   * Mirror: an update check walks every WoW installation in turn, so a repository installed in several of them was
+   * fetched once per install. Reuse a response for a short while; a failed request is dropped so the next caller retries.
+   */
+  private getWithRateLimit<T>(url: URL | string, expectBinary = false): Promise<T> {
+    const key = `${expectBinary ? "binary" : "json"} ${url.toString()}`;
+    const now = Date.now();
+    const reused = this._responses.get(key);
+    if (reused && now - reused.at < RESPONSE_REUSE_MS) {
+      return reused.response as Promise<T>;
+    }
+
+    for (const [k, v] of this._responses) {
+      if (now - v.at >= RESPONSE_REUSE_MS) {
+        this._responses.delete(k);
+      }
+    }
+
+    const response = this.fetchWithRateLimit<T>(url, expectBinary);
+    this._responses.set(key, { at: now, response });
+    response.catch(() => {
+      if (this._responses.get(key)?.response === response) {
+        this._responses.delete(key);
+      }
+    });
+
+    return response;
+  }
+
+  private async fetchWithRateLimit<T>(url: URL | string, expectBinary: boolean): Promise<T> {
     try {
       const headers = await this.getAuthorizationHeader();
 

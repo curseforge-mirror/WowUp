@@ -14,6 +14,7 @@ Every fork change is listed here. Upstream files only carry small hooks, so merg
 | The app updates from this repo's GitHub releases. Remote bundle updates are off and the shell trusts only our bundle key (`mirror-2026-a`). | `wowup-shell/scripts/set-flavor.js`, `scripts/build-shell.js`, `src/bundle-keys.ts` |
 | Installers are unsigned (no WowUp LLC publisher pin), so Windows warns on first install. | `electron-build/electron-builder.json`, `electron-build/sign-windows.js` |
 | Installing from a CurseForge link looks the project up by its exact slug. Upstream searches the slug's first word and checks one page of results, which misses most Forever add-ons (thousands start with "forever"). | `curse-addon-provider.ts` (`searchBySlug`, `getAddonBySlug`) |
+| GitHub update checks run 8 repositories at a time (upstream: 3), reuse each response for 2 minutes so a repository installed in several WoW installs is fetched once, and read `release.json` through the API asset endpoint instead of the website's download link (about 10 s per file). One check of 218 GitHub add-ons across 4 installs went from about 6 minutes to about 12 seconds. | `github-addon-provider.ts` (`getWithRateLimit`, `getReleaseMetadata`, `GET_ALL_CONCURRENCY`) |
 
 Keys never go in git or in builds. The app stores them in `%APPDATA%\WowUp\sensitive.json`, a plain JSON file.
 
