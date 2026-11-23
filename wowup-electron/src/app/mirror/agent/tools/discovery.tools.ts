@@ -108,7 +108,7 @@ function trimFile(f: AddonSearchResultFile): Record<string, unknown> {
 
 function latestFile(r: AddonSearchResult): AddonSearchResultFile | undefined {
   const files = r.files ?? [];
-  return files.find((f) => f.channelType === 0) ?? files[0];
+  return files.find((f) => Number(f.channelType) === 0) ?? files[0];
 }
 
 function trimResult(r: AddonSearchResult): Record<string, unknown> {

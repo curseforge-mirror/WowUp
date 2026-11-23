@@ -44,7 +44,7 @@ describe("agent relay", () => {
     const pa: string[] = [];
     const pb: string[] = [];
     const a = relay("a", {}, (m) => pa.push(m));
-    relay("b", {}, (m) => pb.push(m));
+    void relay("b", {}, (m) => pb.push(m));
     listeners[AGENT_CHANNEL_PROGRESS]({}, { callId: sent[0].payload.callId, message: "half" });
     expect(pa).to.deep.equal(["half"]);
     expect(pb).to.deep.equal([]);

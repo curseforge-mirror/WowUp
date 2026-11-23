@@ -139,7 +139,7 @@ describe("McpHttpServer", () => {
     await s.start({ port: 0, key: KEY }, slowTool);
     const res = await post(portOf(s), rpc("tools/call", { name: "list_installations", arguments: {} }));
     expect(res.headers.get("content-type")).to.contain("application/json");
-    expect(((await res.json()) as any).result.content[0].text).to.equal("done");
+    expect((await res.json()).result.content[0].text).to.equal("done");
   });
 
   it("answers notifications with 202", async () => {

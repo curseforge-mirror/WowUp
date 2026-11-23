@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/require-await */
 import { expect } from "chai";
 
 import { AGENT_TOOLS } from "../../../src/common/mirror/agent-contract";

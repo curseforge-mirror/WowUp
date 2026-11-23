@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/require-await */
 import { expect } from "chai";
 
 import { isWowRunning } from "./wow-process";

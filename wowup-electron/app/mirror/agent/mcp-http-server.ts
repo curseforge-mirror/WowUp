@@ -186,10 +186,7 @@ export class McpHttpServer {
   }
 
   private async streamToolCall(message: unknown, res: http.ServerResponse, callTool: CallTool): Promise<void> {
-    const params =
-      isRecord(message) && isRecord((message as Record<string, unknown>).params)
-        ? ((message as Record<string, unknown>).params as Record<string, unknown>)
-        : {};
+    const params = isRecord(message) && isRecord(message.params) ? message.params : {};
     const meta = isRecord(params._meta) ? params._meta : {};
     const token = meta.progressToken;
     const hasToken = typeof token === "string" || typeof token === "number";

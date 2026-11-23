@@ -90,7 +90,7 @@ async function curseVersions(externalId: string, deps: VersionDeps): Promise<Age
     fileId: String(f.id),
     version: f.displayName,
     releaseDate: iso(f.fileDate),
-    channel: f.releaseType === 3 ? "alpha" : f.releaseType === 2 ? "beta" : "stable",
+    channel: Number(f.releaseType) === 3 ? "alpha" : Number(f.releaseType) === 2 ? "beta" : "stable",
     gameVersions: f.gameVersions ?? [],
     folders: (f.modules ?? []).map((m) => m.name),
     downloadUrl: f.downloadUrl ?? "",

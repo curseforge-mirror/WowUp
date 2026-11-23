@@ -102,7 +102,7 @@ interface Scope {
 /** Parses the `## Key: Value` metadata lines of a TOC file. */
 export function parseTocFields(text: string): Record<string, string> {
   const fields: Record<string, string> = {};
-  for (const line of text.replace(/^﻿/, "").split(/\r?\n/)) {
+  for (const line of text.replace(/^FEFF/, "").split(/\r?\n/)) {
     const m = /^##\s*([^:]+?)\s*:\s*(.*?)\s*$/.exec(line);
     if (m) {
       fields[m[1]] = m[2];
