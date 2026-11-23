@@ -982,4 +982,35 @@ describe("change tools", () => {
     expect(getModFiles).toHaveBeenCalledWith({ modId: 12345, pageSize: 50, gameVersionTypeId: 67408 });
     expect(preview.add[0].version).toBe("26.10.01");
   });
+
+  it("rescan, set_auto_update and set_ignored back up only records", async () => {
+    const records = [
+      rec({ id: "a1" }),
+      rec({ id: "a2", name: "Beta", externalId: "2", installedFolderList: ["Beta"] }),
+    ];
+    const calls: Array<[string, any]> = [
+      ["rescan", {}],
+      ["set_auto_update", { addonId: "a1", enabled: false }],
+      ["set_ignored", { addonId: "a1", ignored: true }],
+    ];
+    for (const [tool, args] of calls) {
+      const m = make({ records });
+      await m.tools[tool](args, m.ctx);
+      const [name, , addons, folders, , options] = m.backupService.create.calls.mostRecent().args;
+      expect(name).toBe(tool);
+      expect(folders).withContext(tool).toEqual([]);
+      expect(options).withContext(tool).toEqual({ recordsOnly: true });
+      expect(addons.map((a: any) => a.id))
+        .withContext(tool)
+        .toEqual(tool === "rescan" ? ["a1", "a2"] : ["a1"]);
+    }
+
+    // a change that writes folders still copies them
+    const u = make({
+      records: [rec({ id: "a1", latestVersion: "2.0", externalLatestReleaseId: "r2" })],
+      results: { "1": alphaRelease() },
+    });
+    await u.tools.update_addons({ addonIds: ["a1"] }, u.ctx);
+    expect(u.backupService.create.calls.mostRecent().args[5]).toBeUndefined();
+  });
 });

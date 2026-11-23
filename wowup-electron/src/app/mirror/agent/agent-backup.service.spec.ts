@@ -734,6 +734,75 @@ describe("AgentBackupService", () => {
     expect(store.get("a-foo").installedFolderList).toEqual(["Foo", "Foo_Options"]);
   });
 
+  it("a records-only backup copies no folders or SavedVariables but notes what was there", async () => {
+    const before = fs.ops.length;
+    const m = await service.create("rescan", inst, [foo], [], "rescan Retail (1 addon records)", { recordsOnly: true });
+
+    expect(m.recordsOnly).toBeTrue();
+    expect(m.records).toEqual([foo]);
+    expect(m.folders).toEqual([]);
+    expect(m.savedVariables).toEqual([]);
+    expect(m.added).toEqual({ addonIds: [], folders: [] });
+    expect([...(m.foldersAtBackup ?? [])].sort()).toEqual(["Foo", "Foo_Options", "Other"]);
+    expect(m.recordIdsAtBackup).toEqual(["a-foo"]);
+    const ops = fs.ops.slice(before);
+    expect(ops.some((o) => o.startsWith("copy "))).toBeFalse();
+    expect(ops).toEqual([`write ${join(BACKUPS, m.id, "manifest.json")}`]);
+  });
+
+  it("rolling back a records-only backup restores records and never removes a folder", async () => {
+    const m = await service.create("set_ignored", inst, [foo], [], "set_ignored Foo on", { recordsOnly: true });
+
+    // the change marks Foo ignored; later the user updates it, which adds a folder
+    store.set("a-foo", {
+      ...foo,
+      isIgnored: true,
+      installedVersion: "2.0",
+      installedFolderList: ["Foo", "Foo_Options", "Foo_New"],
+    });
+    fs.put(join(ADDONS, "Foo_New", "new.lua"), "new");
+    fs.put(CORE, "core v2");
+    jasmine.clock().tick(1000);
+    fs.ops.length = 0;
+
+    const r = await service.rollback(m.id);
+
+    expect(store.get("a-foo").isIgnored).toBeUndefined();
+    expect(store.get("a-foo").installedFolderList).toEqual(["Foo", "Foo_Options"]);
+    expect(r.restoredRecords).toBe(1);
+    expect(r.removedFolders).toEqual([]);
+    expect(r.restoredFolders).toEqual([]);
+    expect(r.savedVariables).toBe("none");
+    // it holds no folder copies, so it puts no folder back and takes none away
+    expect(fs.read(join(ADDONS, "Foo_New", "new.lua"))).toBe("new");
+    expect(fs.read(CORE)).toBe("core v2");
+    expect(fs.ops.some(isLive)).toBeFalse();
+    // and its safety backup is records-only too
+    expect(manifestOf(r.safetyBackupId).recordsOnly).toBeTrue();
+    expect(manifestOf(r.safetyBackupId).folders).toEqual([]);
+  });
+
+  it("rolling back a records-only rescan backup puts the old records back in place of the new ones", async () => {
+    const other: any = { id: "a-other", name: "Other", installationId: "i1", installedFolderList: ["Other"] };
+    store.set("a-other", { ...other });
+    const m = await service.create("rescan", inst, [foo, other], [], "rescan", { recordsOnly: true });
+
+    // the rescan re-creates every record with a new id
+    store.clear();
+    store.set("n-foo", { ...foo, id: "n-foo" });
+    store.set("n-other", { ...other, id: "n-other" });
+    jasmine.clock().tick(1000);
+    fs.ops.length = 0;
+
+    const r = await service.rollback(m.id);
+
+    expect([...store.keys()].sort()).toEqual(["a-foo", "a-other"]);
+    expect(r.removedRecords).toBe(2);
+    expect(r.restoredRecords).toBe(2);
+    expect(fs.ops.some(isLive)).toBeFalse();
+    expect(fs.read(CORE)).toBe("core v1");
+  });
+
   it("rollback takes a safety backup first", async () => {
     const m = await service.create("update_addons", inst, [foo]);
     fs.put(CORE, "core v2");

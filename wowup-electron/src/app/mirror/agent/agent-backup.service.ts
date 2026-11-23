@@ -58,6 +58,8 @@ export interface BackupManifest {
   foldersAtBackup?: string[];
   /** The safety backup taken by the rollback that left SavedVariables pending */
   safetyBackupId?: string;
+  /** Only records were backed up (no folders or SavedVariables): rollback restores records and removes no folder */
+  recordsOnly?: boolean;
 }
 
 export interface RollbackResult {
@@ -87,6 +89,7 @@ interface SnapshotOptions {
   addedIds?: string[];
   addedNames?: string[];
   summary?: string;
+  recordsOnly?: boolean;
 }
 
 function message(e: unknown): string {
@@ -222,7 +225,8 @@ export class AgentBackupService {
 
   /**
    * Copy each addon's folders (plus `extraFolders`), its record and the SavedVariables named after those folders.
-   * Only copies; the live install is never touched.
+   * Only copies; the live install is never touched. With `recordsOnly` (for changes that only change records) just
+   * the records are kept, with the AddOns entries and record ids there at the time.
    */
   public create(
     tool: string,
@@ -230,12 +234,24 @@ export class AgentBackupService {
     addons: Addon[],
     extraFolders: string[] = [],
     summary?: string,
+    options: { recordsOnly?: boolean } = {},
   ): Promise<BackupManifest> {
     return this.exclusive(async () => {
       if (typeof tool !== "string" || tool.trim() === "") {
         throw new Error("A backup needs the name of the tool making the change.");
       }
       const records = this.checkRecords(installation, addons);
+      if (options.recordsOnly === true) {
+        return await this.snapshot({
+          tool,
+          installation,
+          records,
+          folders: [],
+          savedVariables: [],
+          summary,
+          recordsOnly: true,
+        });
+      }
       const folders = uniqueFolders(
         [...records.flatMap((a) => a.installedFolderList ?? []), ...extraFolders].map((f) => assertFolderName(f)),
       );
@@ -437,6 +453,9 @@ export class AgentBackupService {
       };
       if (o.summary) {
         manifest.summary = o.summary;
+      }
+      if (o.recordsOnly) {
+        manifest.recordsOnly = true;
       }
       if (o.addedNames && o.addedNames.length > 0) {
         manifest.added.names = o.addedNames;
@@ -657,8 +676,11 @@ export class AgentBackupService {
     );
     // Folders to remove: what the change added and what the touched records claim now (a later update may have
     // added folders). Never one being restored, one an addon this rollback doesn't touch still claims, or one
-    // that already existed when the backup was taken (it can't be put back, so it isn't taken away)
-    const removeFolders = uniqueFolders([...manifest.added.folders, ...touched.flatMap(foldersOf)]).filter((f) => {
+    // that already existed when the backup was taken (it can't be put back, so it isn't taken away). A records-only
+    // backup removes none: its change wrote no folders, and without copies of the rest, taking away a folder a later
+    // update added would leave that addon half updated.
+    const removable = manifest.recordsOnly ? [] : [...manifest.added.folders, ...touched.flatMap(foldersOf)];
+    const removeFolders = uniqueFolders(removable).filter((f) => {
       const k = folderKey(f);
       return !restoreKeys.has(k) && !keptKeys.has(k) && !existedKeys.has(k);
     });
@@ -673,6 +695,7 @@ export class AgentBackupService {
       addedIds: missingRecords.map((r) => r.id),
       addedNames: missingRecords.map((r) => r.name),
       summary: `State before rolling back ${manifest.id}`,
+      recordsOnly: manifest.recordsOnly,
     });
 
     const restoredFolders: string[] = [];

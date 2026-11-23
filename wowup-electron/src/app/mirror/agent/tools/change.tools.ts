@@ -98,6 +98,7 @@ export interface ChangeDeps extends Omit<ReleaseFolderDeps, "getProvider"> {
       addons: Addon[],
       extraFolders?: string[],
       summary?: string,
+      options?: { recordsOnly?: boolean },
     ): Promise<{ id: string }>;
     recordAdded(id: string, added: Addon[]): Promise<void>;
   };
@@ -131,6 +132,9 @@ interface InstallPlan {
  * name. Their releases are always downloaded to learn what they write.
  */
 const PLACEHOLDER_FOLDER_PROVIDERS = [ADDON_PROVIDER_GITHUB, ADDON_PROVIDER_ZIP].map((p) => p.toLowerCase());
+
+/** For changes that only change records (rescan, auto-update, ignore): no folder or SavedVariables copies */
+const RECORDS_ONLY = { recordsOnly: true };
 
 const IMPORT_ERRORS: Record<string, string> = {
   GENERIC_IMPORT_ERROR: "The import lists no addons.",
@@ -911,6 +915,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         [addon],
         [],
         `set_auto_update ${addon.name} ${state}`,
+        RECORDS_ONLY,
       );
       await runChange(backup.id, installation, installed, `Turning auto-update ${state} for ${addon.name}`, () => {
         // As My Addons does: auto-update brings notifications along and un-ignores the addon
@@ -949,6 +954,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         [addon],
         [],
         `set_ignored ${addon.name} ${ignored ? "on" : "off"}`,
+        RECORDS_ONLY,
       );
       await runChange(backup.id, installation, installed, `Marking ${addon.name}`, () => {
         // As My Addons does: ignoring an addon turns its auto-update off
@@ -979,6 +985,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         installed,
         [],
         `rescan ${nameOf(installation)} (${installed.length} addon records)`,
+        RECORDS_ONLY,
       );
       ctx.progress(`Rescanning ${nameOf(installation)}`);
       const { after } = await runChange(backup.id, installation, installed, `Rescanning ${nameOf(installation)}`, () =>
