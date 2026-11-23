@@ -28,6 +28,14 @@ const INCOMPLETE_MAX_AGE_MS = DAY_MS;
 const MAX_TOOL_SLUG = 60;
 /** A backup id is a single folder name inside the backups folder */
 const BACKUP_ID = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/;
+export const SYMLINK_MODE_TEXT = "WowUp's symlink mode isn't supported for agent changes yet; nothing was changed.";
+
+/** A backup copy failed on an addon folder that is a symlink */
+class SymlinkModeError extends Error {
+  public constructor() {
+    super(SYMLINK_MODE_TEXT);
+  }
+}
 
 export interface BackupManifest {
   id: string;
@@ -415,7 +423,11 @@ export class AgentBackupService {
           absent.push(folder);
           continue;
         }
-        await this._fileService.copy(live, join(dir, ADDONS_DIR, folder));
+        try {
+          await this._fileService.copy(live, join(dir, ADDONS_DIR, folder));
+        } catch (e) {
+          throw (await this.isSymlink(addonsPath, folder)) ? new SymlinkModeError() : e;
+        }
         copied.push(folder);
       }
 
@@ -469,7 +481,20 @@ export class AgentBackupService {
       } catch (cleanup) {
         console.error(`[agent-backup] could not remove incomplete backup ${id}`, cleanup);
       }
+      if (e instanceof SymlinkModeError) {
+        throw new Error(SYMLINK_MODE_TEXT);
+      }
       throw new Error(`Could not take a backup (${o.tool}): ${message(e)}`);
+    }
+  }
+
+  /** Whether an AddOns entry is a symlink (WowUp's symlink mode); not knowing counts as no */
+  private async isSymlink(addonsPath: string, folder: string): Promise<boolean> {
+    try {
+      const entries = await this._fileService.listEntries(addonsPath, "*");
+      return entries.some((e) => folderKey(e.name) === folderKey(folder) && e.isSymbolicLink);
+    } catch {
+      return false;
     }
   }
 

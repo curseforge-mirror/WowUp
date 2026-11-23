@@ -19,6 +19,8 @@ class FakeFs {
   public readonly dirs = new Set<string>();
   public readonly ops: string[] = [];
   public readonly mtimes = new Map<string, number>();
+  /** Entries that are symlinks (WowUp's symlink mode); copying one fails, as fs.copy does across some links */
+  public readonly links = new Set<string>();
 
   public mkdirp(p: string): void {
     let d = normalize(p);
@@ -66,6 +68,9 @@ class FakeFs {
         const s = normalize(src);
         const d = normalize(dest);
         this.ops.push(`copy ${s} -> ${d}`);
+        if (this.links.has(s)) {
+          throw new Error(`EPERM: operation not permitted, copy '${s}'`);
+        }
         if (this.dirs.has(s)) {
           this.mkdirp(d);
           for (const dir of [...this.dirs]) {
@@ -123,6 +128,15 @@ class FakeFs {
           throw new Error(`ENOENT: ${k}`);
         }
         return [...this.dirs, ...this.files.keys()].filter((e) => e !== k && dirname(e) === k).map((e) => basename(e));
+      },
+      listEntries: async (p: string) => {
+        const k = normalize(p);
+        if (!this.dirs.has(k)) {
+          throw new Error(`ENOENT: ${k}`);
+        }
+        return [...this.dirs, ...this.files.keys()]
+          .filter((e) => e !== k && dirname(e) === k)
+          .map((e) => ({ name: basename(e), isDirectory: this.dirs.has(e), isSymbolicLink: this.links.has(e) }));
       },
       listFiles: async (p: string) => {
         const k = normalize(p);
@@ -801,6 +815,28 @@ describe("AgentBackupService", () => {
     expect(r.restoredRecords).toBe(2);
     expect(fs.ops.some(isLive)).toBeFalse();
     expect(fs.read(CORE)).toBe("core v1");
+  });
+
+  it("a backup of a symlinked addon folder fails with one clear sentence and changes nothing", async () => {
+    fs.links.add(normalize(join(ADDONS, "Foo")));
+    await expectAsync(service.create("update_addons", inst, [foo])).toBeRejectedWithError(
+      "WowUp's symlink mode isn't supported for agent changes yet; nothing was changed.",
+    );
+    expect(fs.exists(join(BACKUPS, "20261123-101500-update_addons"))).toBeFalse();
+    expect(fs.ops.some(isLive)).toBeFalse();
+
+    // any other copy failure still names the backup that failed
+    fs.links.clear();
+    const copy = fs.api().copy;
+    (TestBed.inject(FileService) as any).copy = async (src: string, dest: string) => {
+      if (src.endsWith("Foo")) {
+        throw new Error("EBUSY: resource busy");
+      }
+      return copy(src, dest);
+    };
+    await expectAsync(service.create("update_addons", inst, [foo])).toBeRejectedWithError(
+      /Could not take a backup \(update_addons\): EBUSY/,
+    );
   });
 
   it("rollback takes a safety backup first", async () => {
