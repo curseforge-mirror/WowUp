@@ -66,7 +66,7 @@ Every change an agent makes is backed up first, in `agent-backups/` inside WowUp
 Connecting, using the **Copy setup** buttons in Options:
 
 - **Claude Code**: paste the copied `claude mcp add --transport http wowup …` command into a terminal.
-- **Claude Desktop**: merge the copied JSON (`mcp-remote` via `npx`) into `claude_desktop_config.json`.
+- **Claude Desktop**: merge the copied JSON (`mcp-remote` via `npx`, the key in its `env` so the arguments hold no spaces) into `claude_desktop_config.json`.
 - **Other apps**: the copied JSON (`url` plus an `Authorization: Bearer` header) fits any client that speaks streamable HTTP.
 
 Code lives in `wowup-electron/app/mirror/agent/` (main process: HTTP server) and `wowup-electron/src/app/mirror/agent/` (renderer: tools, backups, Options block). Hook points into upstream files:

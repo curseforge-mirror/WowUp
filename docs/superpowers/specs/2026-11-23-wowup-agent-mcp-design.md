@@ -19,7 +19,9 @@ layer that hides what is being installed.
 
 - An MCP server built into the fork, off until the user turns it on in Options, that any MCP-capable agent app can
   connect to: Claude Code, Cursor and others directly over HTTP; Claude Desktop (whose config file only takes stdio
-  servers) through the widely used `mcp-remote` bridge (`npx -y mcp-remote <url> --header "Authorization: Bearer <key>"`).
+  servers) through the widely used `mcp-remote` bridge (`npx -y mcp-remote <url> --header "Authorization:${AUTH_HEADER}"`
+  with `"env": { "AUTH_HEADER": "Bearer <key>" }`, the form mcp-remote documents because Claude Desktop on Windows
+  splits an argument that contains a space).
 - Tools that cover WowUp's addon functionality: find, inspect, install, update, remove, switch source, rescan, check for
   updates, import and export lists, and settings such as auto-update and ignore.
 - Inspection tools: download any candidate release into a sandbox and list, read and search its files, for agents with
@@ -75,9 +77,9 @@ times out. Plain JSON responses otherwise.
 
 **Switch and setup.** Options → Addons (where the fork already added the CurseForge key field) gets one block: the
 on/off switch, the address, the key with a regenerate button, and "copy setup" for Claude Code (a
-`claude mcp add --transport http …` line), for Claude Desktop (an `mcp-remote` entry for its config file) and for a
-generic JSON MCP config (`url` + `headers`, as Cursor and most others take). Turning it on or off applies at once; no
-restart.
+`claude mcp add --transport http …` line), for Claude Desktop (an `mcp-remote` entry for its config file, the key in
+its `env`) and for a generic JSON MCP config (`url` + `headers`, as Cursor and most others take). Turning it on or
+off applies at once; no restart.
 
 **Files.** Everything new lives under `wowup-electron/app/mirror/agent/` (main) and
 `wowup-electron/src/app/mirror/agent/` (renderer). Upstream files get only hooks:
