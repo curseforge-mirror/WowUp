@@ -41,7 +41,10 @@ export interface InspectDeps {
   applicationFolderPath: string;
   fileService: {
     unzipFile(zipFilePath: string, outputFolder: string): Promise<string>;
-    listDirectoryRecursive(dirPath: string): Promise<string[]>;
+    listEntries(
+      sourcePath: string,
+      filter: string,
+    ): Promise<{ name: string; isDirectory: boolean; isSymbolicLink: boolean }[]>;
     readFile(sourcePath: string): Promise<string>;
     pathExists(sourcePath: string): Promise<boolean>;
     remove(sourcePath: string): Promise<boolean>;
@@ -168,11 +171,25 @@ export function createInspectTools(deps: InspectDeps): AgentToolSet {
 
   const relOf = (scope: Scope, abs: string): string => toSlash(relative(resolve(scope.base), abs));
 
+  /** Lists files under `dir`, joining names onto `dir` so results stay under it even when `dir` is a symlink. */
+  const walk = async (dir: string): Promise<string[]> => {
+    const out: string[] = [];
+    for (const entry of await fileService.listEntries(dir, "*")) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory && !entry.isSymbolicLink) {
+        out.push(...(await walk(full)));
+      } else if (!entry.isDirectory) {
+        out.push(full);
+      }
+    }
+    return out;
+  };
+
   const listUnder = async (dir: string): Promise<string[]> => {
     if (!(await fileService.pathExists(dir))) {
       throw new Error(`Nothing exists at ${dir}.`);
     }
-    return fileService.listDirectoryRecursive(dir);
+    return walk(dir);
   };
 
   /** Every file the scope allows, as absolute paths. */
@@ -240,7 +257,7 @@ export function createInspectTools(deps: InspectDeps): AgentToolSet {
     } finally {
       await fileService.remove(saved || zipPath).catch(() => false);
     }
-    const files = (await fileService.listDirectoryRecursive(folder)).map((p) => relOf({ base: folder }, p)).sort();
+    const files = (await walk(folder)).map((p) => relOf({ base: folder }, p)).sort();
     return {
       root,
       path: folder,

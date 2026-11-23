@@ -8,6 +8,7 @@ describe("inspect tools", () => {
   const ctx = { progress: () => undefined };
   const ROOT = "GitHub-own_repo-v2";
   let files: Record<string, string>;
+  let links: Record<string, string>;
 
   const make = (over: any = {}) => {
     const fileService = {
@@ -16,14 +17,29 @@ describe("inspect tools", () => {
         files[join(out, "Alpha", "main.lua")] = "print('hi')\n";
         return out;
       }),
-      listDirectoryRecursive: async (dir: string) => Object.keys(files).filter((p) => p.startsWith(dir + "\\")),
-      readFile: async (p: string) => {
+      listEntries: async (dir: string) => {
+        const prefix = real(dir) + "\\";
+        const names = new Map<string, boolean>();
+        Object.keys(files)
+          .filter((p) => p.startsWith(prefix))
+          .forEach((p) => {
+            const rest = p.slice(prefix.length).split("\\");
+            names.set(rest[0], names.get(rest[0]) || rest.length > 1);
+          });
+        return [...names].map(([name, isDirectory]) => ({ name, isDirectory, isSymbolicLink: false }));
+      },
+      readFile: async (orig: string) => {
+        const p = Object.entries(links).reduce(
+          (acc, [from, to]) => (acc.startsWith(from + "\\") ? to + acc.slice(from.length) : acc),
+          orig,
+        );
         if (!(p in files)) {
           throw new Error("ENOENT " + p);
         }
         return files[p];
       },
-      pathExists: async (p: string) => Object.keys(files).some((k) => k === p || k.startsWith(p + "\\")),
+      pathExists: async (p: string) =>
+        Object.keys(files).some((k) => k === (links[p] ?? p) || k.startsWith((links[p] ?? p) + "\\")),
       remove: jasmine.createSpy("remove").and.callFake(async (p: string) => {
         Object.keys(files)
           .filter((k) => k === p || k.startsWith(p + "\\"))
@@ -82,10 +98,16 @@ describe("inspect tools", () => {
   };
 
   const fetchGh = (tools: any) => tools.fetch_release({ provider: "GitHub", externalId: "own/repo" }, ctx);
+  const real = (orig: string): string =>
+    Object.entries(links).reduce(
+      (acc, [from, to]) => (acc === from || acc.startsWith(from + "\\") ? to + acc.slice(from.length) : acc),
+      orig,
+    );
   const sandbox = (...parts: string[]) => join(APP, "agent-sandbox", ROOT, ...parts);
 
   beforeEach(() => {
     files = {};
+    links = {};
   });
 
   it("registers the five inspection tools", () => {
@@ -180,6 +202,17 @@ describe("inspect tools", () => {
     expect(res).toEqual([
       { folder: "Alpha", file: "Alpha.toc", fields: { Interface: "30300", Title: "Alpha", Version: "1.2" } },
     ]);
+  });
+
+  it("inspects an installed addon whose folder is a symlink", async () => {
+    const { tools } = make();
+    links["C:\\wow\\AddOns\\Alpha"] = "D:\\elsewhere\\Alpha";
+    files["D:\\elsewhere\\Alpha\\Alpha.toc"] = "## Interface: 30300\n";
+    files["D:\\elsewhere\\Alpha\\sub\\x.lua"] = "needle\n";
+    const toc: any = await tools.read_toc({ addonId: "a1" }, ctx);
+    expect(toc).toEqual([{ folder: "Alpha", file: "Alpha.toc", fields: { Interface: "30300" } }]);
+    const listed: any = await tools.list_files({ root: "addon:a1", path: "Alpha" }, ctx);
+    expect(listed.files).toEqual(["Alpha/Alpha.toc", "Alpha/sub/x.lua"]);
   });
 
   it("read_toc reads an installed addon's TOC", async () => {
