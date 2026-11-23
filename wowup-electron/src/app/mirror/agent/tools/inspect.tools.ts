@@ -1,11 +1,14 @@
-import { dirname, isAbsolute, join, relative, resolve, sep } from "path";
+import { dirname, join, relative, resolve, sep } from "path";
 import { Addon, AddonSearchResult, DownloadAuth, WowInstallation } from "wowup-lib-core";
 
 import { AgentToolSet } from "../agent-tool";
 import { agentSandboxPath } from "../agent-settings";
 import { resolveAddon, resolveInstallation } from "../resolve";
 import { canonicalProvider } from "./discovery.tools";
+import { downloadToSandbox, resolveScopedPath, safeName } from "./release-download";
 import { AgentVersion, CurseVersionClient, listVersions } from "./versions";
+
+export { resolveScopedPath };
 
 export const ADDON_ROOT_PREFIX = "addon:";
 const DEFAULT_MAX_LINES = 400;
@@ -71,24 +74,6 @@ export interface InspectDeps {
   createCurseClient?: (apiKey: string) => CurseVersionClient;
 }
 
-/**
- * Resolves `relativePath` under `rootDir` lexically; throws when it is absolute or leaves the root.
- * Symlinks are deliberately not resolved (WowUp's symlink mode makes addon folders symlinks).
- */
-export function resolveScopedPath(rootDir: string, relativePath: string): string {
-  const rel = relativePath ?? "";
-  if (isAbsolute(rel) || /^[\\/]/.test(rel) || /^[a-zA-Z]:/.test(rel)) {
-    throw new Error(`"${relativePath}" is absolute; pass a path relative to the root.`);
-  }
-  const base = resolve(rootDir);
-  const abs = resolve(base, rel);
-  const back = relative(base, abs);
-  if (back === ".." || back.startsWith(".." + sep) || isAbsolute(back)) {
-    throw new Error(`"${relativePath}" is outside the root.`);
-  }
-  return abs;
-}
-
 function str(args: Record<string, unknown>, key: string): string | undefined {
   const v = args[key];
   return typeof v === "string" && v.trim() !== "" ? v.trim() : undefined;
@@ -97,10 +82,6 @@ function str(args: Record<string, unknown>, key: string): string | undefined {
 function num(args: Record<string, unknown>, key: string, fallback: number): number {
   const v = args[key];
   return typeof v === "number" && Number.isFinite(v) ? Math.floor(v) : fallback;
-}
-
-function safeName(text: string): string {
-  return text.replace(/[^A-Za-z0-9._-]+/g, "_");
 }
 
 function toSlash(p: string): string {
@@ -229,34 +210,8 @@ export function createInspectTools(deps: InspectDeps): AgentToolSet {
     version: string,
     url: string,
   ): Promise<{ root: string; path: string; files: string[]; filesTruncated?: boolean }> => {
-    if (!url) {
-      throw new Error("This release has no download URL (the provider does not allow direct downloads).");
-    }
     const root = safeName(`${provider}-${externalId}-${version}`);
-    const folder = resolveScopedPath(sandboxBase, root);
-    const zipName = `${root}.zip`;
-    const zipPath = join(sandboxBase, zipName);
-    await fileService.createDirectory(sandboxBase);
-    if (await fileService.pathExists(folder)) {
-      await fileService.remove(folder);
-    }
-    let auth: DownloadAuth | undefined;
-    try {
-      auth = await deps.getProvider(canonicalProvider(provider))?.getDownloadAuth?.();
-    } catch (e) {
-      console.error("Agent download auth failed", e);
-    }
-    const saved = await deps.downloadService.downloadZipFile({
-      auth,
-      fileName: zipName,
-      outputFolder: sandboxBase,
-      url,
-    });
-    try {
-      await fileService.unzipFile(saved || zipPath, folder);
-    } finally {
-      await fileService.remove(saved || zipPath).catch(() => false);
-    }
+    const folder = await downloadToSandbox(deps, provider, root, url);
     const files = (await walk(folder)).map((p) => relOf({ base: folder }, p)).sort();
     return {
       root,

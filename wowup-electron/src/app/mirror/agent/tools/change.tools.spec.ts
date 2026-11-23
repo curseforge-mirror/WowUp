@@ -1,4 +1,5 @@
 /* eslint-disable */
+import { join } from "path";
 import { of, Subject } from "rxjs";
 import { AddonChannelType, WowClientType } from "wowup-lib-core";
 
@@ -50,8 +51,27 @@ describe("change tools", () => {
     ...over,
   });
 
-  const make = (opts: { records?: any[]; disk?: string[]; result?: any; results?: Record<string, any> } = {}) => {
+  /** Alpha's release r2 (2.0), listing its folders */
+  const alphaRelease = (folders = ["Alpha"]): any =>
+    searchResult({
+      name: "Alpha",
+      externalId: "1",
+      files: [file({ externalId: "r2", version: "2.0", folders, downloadUrl: "https://example.test/r2.zip" })],
+    });
+
+  const make = (
+    opts: {
+      records?: any[];
+      disk?: string[];
+      result?: any;
+      results?: Record<string, any>;
+      /** download url → the top-level directories its zip unpacks to */
+      zips?: Record<string, string[]>;
+      mismatched?: string[];
+    } = {},
+  ) => {
     let records: any[] = (opts.records ?? []).map((r) => ({ ...r }));
+    const zips = opts.zips ?? {};
     const log: string[] = [];
     let newIds = 0;
     const upsert = (a: any) => {
@@ -75,6 +95,7 @@ describe("change tools", () => {
             externalId,
             latestVersion: f.version,
             externalLatestReleaseId: f.externalId,
+            downloadUrl: f.downloadUrl,
             installationId: installation.id,
             installedFolderList: [],
             isIgnored: false,
@@ -90,7 +111,7 @@ describe("change tools", () => {
         log.push(`install:${a.id}`);
         onUpdate?.(AddonInstallState.Downloading, 25);
         a.installedVersion = a.latestVersion;
-        a.installedFolderList = a.__folders;
+        a.installedFolderList = a.__folders?.length ? a.__folders : zips[a.downloadUrl];
         a.isIgnored = false;
         upsert(a);
         onUpdate?.(AddonInstallState.Complete, 100);
@@ -116,6 +137,39 @@ describe("change tools", () => {
         records = records.map((r) => ({ ...r, id: `${r.id}-scanned` }));
         return records.map((r) => ({ ...r }));
       }),
+      findGameVersionMismatches: jasmine
+        .createSpy("findGameVersionMismatches")
+        .and.callFake(async (addons: any[]) =>
+          addons
+            .filter((a) => (opts.mismatched ?? []).includes(a.id))
+            .map((addon) => ({ addon, installation: { ...INSTALL, gameVersion: "1.15.0" } })),
+        ),
+    };
+    const zipOf: Record<string, string> = {};
+    const unzipped: Record<string, string[]> = {};
+    const downloadService = {
+      downloadZipFile: jasmine.createSpy("downloadZipFile").and.callFake(async (o: any) => {
+        if (!(o.url in zips)) {
+          throw new Error(`unexpected download ${o.url}`);
+        }
+        const zip = `${o.outputFolder}/${o.fileName}`;
+        zipOf[zip] = o.url;
+        return zip;
+      }),
+    };
+    const fileService = {
+      createDirectory: jasmine.createSpy("createDirectory").and.resolveTo(true),
+      pathExists: jasmine.createSpy("pathExists").and.resolveTo(false),
+      remove: jasmine.createSpy("remove").and.callFake(async (p: string) => {
+        log.push(`sandbox-remove:${p}`);
+        delete unzipped[p];
+        return true;
+      }),
+      unzipFile: jasmine.createSpy("unzipFile").and.callFake(async (zip: string, out: string) => {
+        unzipped[out] = zips[zipOf[zip]];
+        return out;
+      }),
+      listDirectories: jasmine.createSpy("listDirectories").and.callFake(async (p: string) => unzipped[p] ?? []),
     };
     const backupService = {
       create: jasmine.createSpy("create").and.callFake(async () => {
@@ -142,8 +196,12 @@ describe("change tools", () => {
     };
     const provider = {
       getById: jasmine.createSpy("getById").and.callFake(async (externalId: string) => resultFor(externalId)),
+      getDownloadAuth: async () => undefined,
     };
     const deps = {
+      applicationFolderPath: "C:/data",
+      fileService,
+      downloadService,
       addonService,
       brokerService,
       backupService,
@@ -161,9 +219,12 @@ describe("change tools", () => {
       backupService,
       brokerService,
       provider,
+      fileService,
+      downloadService,
       ctx,
       log,
       records: () => records,
+      sandboxLeft: () => Object.keys(unzipped),
     };
   };
 
@@ -204,10 +265,12 @@ describe("change tools", () => {
           id: "a1",
           name: "Alpha",
           latestVersion: "2.0",
+          externalLatestReleaseId: "r2",
           externalIds: [{ providerName: "Wago", id: "w1" }],
         }),
       ],
       disk: ["TipTac", "Alpha"],
+      results: { "1": alphaRelease() },
     });
 
     const preview: any = await m.tools.install_addon({ provider: "curse", externalId: "12345", preview: true }, m.ctx);
@@ -224,7 +287,8 @@ describe("change tools", () => {
     ]);
     expect(preview.remove.map((l: any) => l.name)).toEqual(["TipTac"]);
     expect(preview.foldersReplaced).toEqual(["TipTac"]);
-    expect(preview.settingsCarryOver).toBeFalse();
+    // overwrites TipTac (on disk, and the Unknown record's), adds TipTacOptions
+    expect(preview.settingsCarryOver).toBe("partial");
 
     const json = JSON.stringify({
       client_type: "ClassicEra",
@@ -378,10 +442,11 @@ describe("change tools", () => {
   it("update_addons all only touches addons with updates", async () => {
     const m = make({
       records: [
-        rec({ id: "a1", name: "Alpha", latestVersion: "2.0" }),
-        rec({ id: "a2", name: "Beta" }),
-        rec({ id: "a3", name: "Gamma", latestVersion: "2.0", isIgnored: true }),
+        rec({ id: "a1", name: "Alpha", latestVersion: "2.0", externalLatestReleaseId: "r2" }),
+        rec({ id: "a2", name: "Beta", installedFolderList: ["Beta"] }),
+        rec({ id: "a3", name: "Gamma", latestVersion: "2.0", isIgnored: true, installedFolderList: ["Gamma"] }),
       ],
+      results: { "1": alphaRelease() },
     });
 
     const out: any = await m.tools.update_addons({ all: true }, m.ctx);
@@ -392,7 +457,7 @@ describe("change tools", () => {
       "update_addons",
       INSTALL,
       [jasmine.objectContaining({ id: "a1" })],
-      [],
+      ["Alpha"],
       jasmine.stringMatching(/Alpha/),
     );
     expect(m.log.indexOf("backup")).toBeLessThan(m.log.indexOf("update:a1"));
@@ -440,5 +505,140 @@ describe("change tools", () => {
     );
     // the record saved before the install still goes into the backup, so rollback removes it
     expect(m.backupService.recordAdded).toHaveBeenCalledOnceWith("b1", [jasmine.objectContaining({ id: "new1" })]);
+
+    // when noting that record fails as well, the error says both and doesn't promise a clean rollback
+    const both = make();
+    both.addonService.installAddon.and.rejectWith(new Error("download failed"));
+    both.backupService.recordAdded.and.rejectWith(new Error("manifest locked"));
+    await expectAsync(
+      both.tools.install_addon({ provider: "Curse", externalId: "12345" }, both.ctx),
+    ).toBeRejectedWithError(/download failed.*manifest locked.*may leave/);
+  });
+
+  it("a provider that lists no folders is downloaded to learn them", async () => {
+    const wagoFile = file({ externalId: "wf", version: "3.0", folders: [], downloadUrl: "https://wago.test/tt.zip" });
+    const unknown = rec({
+      id: "u1",
+      name: "TipTac",
+      providerName: "Unknown",
+      externalId: "",
+      installedFolderList: ["TipTac"],
+    });
+    const opts = {
+      records: [unknown, rec({ id: "r2", name: "Other", installedFolderList: ["Other"] })],
+      disk: ["TipTac", "Other"],
+      result: searchResult({ providerName: "Wago", externalId: "w9", files: [wagoFile] }),
+      zips: { "https://wago.test/tt.zip": ["TipTac", "__MACOSX"] },
+    };
+
+    const p = make(opts);
+    const preview: any = await p.tools.install_addon({ provider: "Wago", externalId: "w9", preview: true }, p.ctx);
+    expect(preview.add[0].folders).toEqual(["TipTac"]);
+    expect(preview.remove.map((l: any) => l.name)).toEqual(["TipTac"]);
+    expect(preview.foldersReplaced).toEqual(["TipTac"]);
+    expect(preview.settingsCarryOver).toBeTrue();
+    expect(p.downloadService.downloadZipFile).toHaveBeenCalledOnceWith(
+      jasmine.objectContaining({ url: "https://wago.test/tt.zip", outputFolder: join("C:/data", "agent-sandbox") }),
+    );
+    expect(p.sandboxLeft()).toEqual([]);
+    expect(p.backupService.create).not.toHaveBeenCalled();
+    expect(p.addonService.installAddon).not.toHaveBeenCalled();
+
+    const m = make(opts);
+    await m.tools.install_addon({ provider: "Wago", externalId: "w9" }, m.ctx);
+    expect(m.backupService.create).toHaveBeenCalledOnceWith(
+      "install_addon",
+      INSTALL,
+      [jasmine.objectContaining({ id: "u1" })],
+      ["TipTac"],
+      jasmine.any(String),
+    );
+    expect(m.log.findIndex((l) => l.startsWith("sandbox-remove:"))).toBeLessThan(m.log.indexOf("backup"));
+
+    // a download that fails stops the change before any backup
+    const broken = make({ ...opts, zips: {} });
+    await expectAsync(
+      broken.tools.install_addon({ provider: "Wago", externalId: "w9" }, broken.ctx),
+    ).toBeRejectedWithError(/Could not download .*Nothing was changed/);
+    mutators(broken).forEach((spy) => expect(spy).not.toHaveBeenCalled());
+
+    // switching Curse -> Wago keeps the folders once Wago's download shows them
+    const s = make({
+      records: [rec({ id: "a1", installedFolderList: ["Alpha"], externalIds: [{ providerName: "Wago", id: "w1" }] })],
+      disk: ["Alpha"],
+      result: searchResult({
+        name: "Alpha",
+        providerName: "Wago",
+        externalId: "w1",
+        files: [file({ folders: [], downloadUrl: "https://wago.test/alpha.zip" })],
+      }),
+      zips: { "https://wago.test/alpha.zip": ["Alpha"] },
+    });
+    const switched: any = await s.tools.switch_provider({ addonId: "a1", provider: "Wago", preview: true }, s.ctx);
+    expect(switched.add[0].folders).toEqual(["Alpha"]);
+    expect(switched.settingsCarryOver).toBeTrue();
+
+    // and an import line learns them the same way
+    const i = make(opts);
+    const json = JSON.stringify({
+      client_type: "ClassicEra",
+      addons: [{ id: "w9", name: "TipTac", provider_name: "Wago" }],
+    });
+    const imported: any = await i.tools.import_addons({ text: json, preview: true }, i.ctx);
+    expect(imported.add[0].folders).toEqual(["TipTac"]);
+  });
+
+  it("update_addons learns the folders of a release that lists none", async () => {
+    const m = make({
+      records: [
+        rec({
+          id: "a1",
+          name: "Alpha",
+          providerName: "Wago",
+          externalId: "w1",
+          installedFolderList: ["Alpha", "Alpha_Old"],
+          latestVersion: "2.0",
+          downloadUrl: "https://wago.test/alpha2.zip",
+        }),
+      ],
+      disk: ["Alpha", "Alpha_Old"],
+      result: searchResult({ name: "Alpha", providerName: "Wago", externalId: "w1", files: [file({ folders: [] })] }),
+      zips: { "https://wago.test/alpha2.zip": ["Alpha", "Alpha_New"] },
+    });
+
+    const preview: any = await m.tools.update_addons({ addonIds: ["a1"], preview: true }, m.ctx);
+    expect(preview.add[0].folders).toEqual(["Alpha", "Alpha_New"]);
+    expect(preview.foldersReplaced).toEqual(["Alpha", "Alpha_Old"]);
+    expect(preview.settingsCarryOver).toBe("partial");
+
+    await m.tools.update_addons({ addonIds: ["a1"] }, m.ctx);
+    expect(m.backupService.create.calls.mostRecent().args[3]).toEqual(["Alpha", "Alpha_New"]);
+  });
+
+  it("update_addons checks the game version the update is built for", async () => {
+    const records = [
+      rec({ id: "a1", name: "Alpha", latestVersion: "2.0", externalLatestReleaseId: "r2", gameVersion: ["2.5.1"] }),
+      rec({ id: "a2", name: "Beta", externalId: "2", latestVersion: "2.0", externalLatestReleaseId: "r2" }),
+    ];
+    const results = { "1": alphaRelease(), "2": alphaRelease(["Beta"]) };
+
+    const all = make({ records, results, mismatched: ["a1"] });
+    const preview: any = await all.tools.update_addons({ all: true, preview: true }, all.ctx);
+    expect(preview.add.map((l: any) => l.name)).toEqual(["Beta"]);
+    expect(preview.action).toMatch(/skipped for their game version.*Alpha/);
+    const out: any = await all.tools.update_addons({ all: true }, all.ctx);
+    expect(all.addonService.findGameVersionMismatches).toHaveBeenCalledWith(jasmine.any(Array), true);
+    expect(all.addonService.updateAddon.calls.allArgs().map((a: any[]) => a[0].id)).toEqual(["a2"]);
+    expect(out.changed.map((c: any) => c.addonId)).toEqual(["a2"]);
+    expect(out.skipped).toEqual([
+      { addonId: "a1", name: "Alpha", reason: jasmine.stringMatching(/2\.5\.1.*1\.15\.0.*addonIds/) },
+    ]);
+
+    const named = make({ records, results, mismatched: ["a1"] });
+    const namedPreview: any = await named.tools.update_addons({ addonIds: ["a1"], preview: true }, named.ctx);
+    expect(namedPreview.action).toMatch(/warning: Alpha .*game version/);
+    const forced: any = await named.tools.update_addons({ addonIds: ["a1"] }, named.ctx);
+    expect(named.addonService.updateAddon.calls.allArgs().map((a: any[]) => a[0].id)).toEqual(["a1"]);
+    expect(forced.warnings).toEqual([jasmine.stringMatching(/Alpha .*2\.5\.1.*updated anyway/)]);
   });
 });

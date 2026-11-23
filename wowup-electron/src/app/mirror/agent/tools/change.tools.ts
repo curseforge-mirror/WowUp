@@ -3,6 +3,7 @@ import {
   Addon,
   AddonSearchResult,
   AddonSearchResultFile,
+  DownloadAuth,
   getEnumName,
   WowClientType,
   WowInstallation,
@@ -16,6 +17,7 @@ import { getLatestFile } from "../../../utils/search-result.utils";
 import { AgentToolContext, AgentToolSet } from "../agent-tool";
 import { resolveAddon, resolveInstallation } from "../resolve";
 import { canonicalProvider } from "./discovery.tools";
+import { ReleaseFolderDeps, releaseFolders } from "./release-download";
 import { CurseVersionClient, listVersions, toSearchResultFile } from "./versions";
 
 /** One addon in a preview: what a change adds or removes */
@@ -51,11 +53,12 @@ export interface ChangedLine {
 /** The slice of a provider these tools call */
 export interface ChangeProvider {
   getById(addonId: string, installation: WowInstallation): Promise<AddonSearchResult | undefined>;
+  getDownloadAuth?(): Promise<DownloadAuth | undefined>;
 }
 
 type OnInstallUpdate = (installState: AddonInstallState, progress: number) => void;
 
-export interface ChangeDeps {
+export interface ChangeDeps extends Omit<ReleaseFolderDeps, "getProvider"> {
   addonService: {
     getAllAddons(installation: WowInstallation): Promise<Addon[]>;
     getAddon(
@@ -75,6 +78,10 @@ export interface ChangeDeps {
     ): Promise<void>;
     rescanInstallation(installation: WowInstallation): Promise<Addon[]>;
     saveAddon(addon: Addon | undefined): Promise<void>;
+    findGameVersionMismatches(
+      addons: Addon[],
+      refresh?: boolean,
+    ): Promise<{ addon: Addon; installation: WowInstallation }[]>;
   };
   brokerService: {
     addonInstall$: Observable<InstallEvent>;
@@ -163,13 +170,24 @@ function carryOver(oldFolders: string[], newFolders: string[]): boolean | "parti
   return shared > 0 ? "partial" : false;
 }
 
-/** A fresh install picks up settings only when it overwrites folders that are all there already */
-function installCarryOver(newFolders: string[], disk: Set<string>): boolean {
-  return newFolders.length > 0 && newFolders.every((f) => disk.has(folderKey(f)));
-}
-
 function onDisk(folders: string[], disk: Set<string>): string[] {
   return uniqueFolders(folders).filter((f) => disk.has(folderKey(f)));
+}
+
+/**
+ * An install with no addon of its own to replace: what it overwrites (its folders already on disk, plus the folders
+ * of the unmatched records WowUp drops for it) against what it writes
+ */
+function installCarryOver(newFolders: string[], disk: Set<string>, dropped: Addon[]): boolean | "partial" {
+  return carryOver(uniqueFolders([...onDisk(newFolders, disk), ...dropped.flatMap(foldersOf)]), newFolders);
+}
+
+/** One answer for several addons: all the same → that, otherwise "partial" */
+function combineCarryOver(values: Array<boolean | "partial">): boolean | "partial" {
+  if (values.length === 0 || values.every((v) => v === true)) {
+    return true;
+  }
+  return values.every((v) => v === false) ? false : "partial";
 }
 
 function foldersOf(a: Addon): string[] {
@@ -250,12 +268,40 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       ctx.progress(`${AddonInstallState[state] ?? "Installing"} ${name} ${Math.round(percent)}%`);
   };
 
+  /**
+   * The top-level folders a release writes. Providers that list none before download (GitHub, Wago, Zip) are
+   * downloaded to the sandbox and read, so previews and backups cover what the install overwrites. Only the sandbox is
+   * written to; a failed download fails the call before anything is backed up or changed.
+   */
+  const foldersOfRelease = async (
+    listed: string[] | undefined,
+    release: { provider: string; externalId: string; name: string; version: string; url: string },
+    ctx: AgentToolContext,
+  ): Promise<string[]> => {
+    if (listed && listed.length > 0) {
+      return listed;
+    }
+    ctx.progress(`Downloading ${release.name} ${release.version} to see which folders it writes`);
+    try {
+      const folders = await releaseFolders(deps, release.provider, release.externalId, release.version, release.url);
+      if (folders.length === 0) {
+        throw new Error("the zip has no folders");
+      }
+      return folders;
+    } catch (e) {
+      throw new Error(
+        `Could not download ${release.name} ${release.version} to see which folders it writes: ${message(e)}. Nothing was changed.`,
+      );
+    }
+  };
+
   /** The file an install would write: the given version, or the latest for the installation's channel */
   const planInstall = async (
     installation: WowInstallation,
     providerName: string,
     externalId: string,
     version: string | undefined,
+    ctx: AgentToolContext,
   ): Promise<InstallPlan> => {
     const provider = canonicalProvider(providerName);
     const result = await providerOf(provider).getById(externalId, installation);
@@ -291,6 +337,11 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
 
     const resolvedProvider = result.providerName || provider;
     const resolvedId = String(result.externalId ?? externalId);
+    const folders = await foldersOfRelease(
+      file.folders,
+      { provider, externalId, name: result.name, version: file.version, url: file.downloadUrl },
+      ctx,
+    );
     return {
       provider,
       externalId,
@@ -301,9 +352,36 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         provider: resolvedProvider,
         externalId: resolvedId,
         version: file.version,
-        folders: file.folders ?? [],
+        folders,
       },
     };
+  };
+
+  /** The folders an update writes: the provider's listing for the release it installs, else that download's */
+  const updateFolders = async (installation: WowInstallation, a: Addon, ctx: AgentToolContext): Promise<string[]> => {
+    let listed: string[] | undefined;
+    try {
+      const result = await providerOf(a.providerName ?? "").getById(a.externalId ?? "", installation);
+      const file = (result?.files ?? []).find(
+        (f) =>
+          (!!a.externalLatestReleaseId && f.externalId === a.externalLatestReleaseId) ||
+          (!!a.latestVersion && f.version === a.latestVersion),
+      );
+      listed = file?.folders;
+    } catch (e) {
+      console.error(`[agent] could not look up the release ${a.name} updates to`, e);
+    }
+    return foldersOfRelease(
+      listed,
+      {
+        provider: a.providerName ?? "",
+        externalId: a.externalId ?? a.id,
+        name: a.name,
+        version: a.latestVersion ?? "latest",
+        url: a.downloadUrl ?? "",
+      },
+      ctx,
+    );
   };
 
   /** WowUp's own install record for the plan, made before any backup so a bad target fails cleanly */
@@ -354,13 +432,15 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         await backupService.recordAdded(backupId, added);
       }
     } catch (e) {
-      if (failure === undefined) {
-        deps.notifyChanged?.();
-        throw new Error(
-          `${what} finished, but noting what it added in backup "${backupId}" failed: ${message(e)}. ` +
-            `rollback ${backupId} restores what was backed up but may leave the new addons in place.`,
-        );
-      }
+      deps.notifyChanged?.();
+      const notNoted =
+        `noting what it added in backup "${backupId}" failed: ${message(e)}. ` +
+        `rollback ${backupId} restores what was backed up but may leave what the change added in place.`;
+      throw new Error(
+        failure === undefined
+          ? `${what} finished, but ${notNoted}`
+          : `${what} failed: ${message(failure)}. Then ${notNoted}`,
+      );
     }
     deps.notifyChanged?.();
 
@@ -416,7 +496,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       };
       refuseInstalled(canonicalProvider(providerArg), externalId);
 
-      const plan = await planInstall(installation, providerArg, externalId, str(args, "version"));
+      const plan = await planInstall(installation, providerArg, externalId, str(args, "version"), ctx);
       refuseInstalled(plan.line.provider, plan.line.externalId);
       const folders = plan.line.folders;
 
@@ -428,7 +508,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
           add: [plan.line],
           remove: droppedUnknowns(installed, folders).map((a) => lineOf(a)),
           foldersReplaced: onDisk(folders, disk),
-          settingsCarryOver: installCarryOver(folders, disk),
+          settingsCarryOver: installCarryOver(folders, disk, droppedUnknowns(installed, folders)),
         };
         return preview;
       }
@@ -465,7 +545,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         throw new Error("Pass addonIds (from list_addons), or all: true for every addon with an update.");
       }
 
-      const targets = chosen.filter((a) => needsUpdate(a));
+      const withUpdate = chosen.filter((a) => needsUpdate(a));
       // Named addons without an update are reported, not reinstalled
       const skipped = (args.all === true ? [] : chosen.filter((a) => !needsUpdate(a))).map((a) => ({
         addonId: a.id,
@@ -473,15 +553,59 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         reason: a.isIgnored ? "ignored" : "no update known (check_updates refreshes this)",
       }));
 
+      // As WowUp's auto-update does: with all: true an update built for a newer game version than the installation
+      // runs is skipped; a named addon is updated anyway, with a warning
+      const mismatches =
+        withUpdate.length > 0 ? (await addonService.findGameVersionMismatches(withUpdate, true)) ?? [] : [];
+      const mismatchOf = (a: Addon) => mismatches.find((m) => m.addon.id === a.id);
+      const mismatchText = (a: Addon) =>
+        `${a.name} ${ver(a.latestVersion)} is built for game version ${(a.gameVersion ?? []).join(", ") || "unknown"}, ` +
+        `newer than ${nameOf(installation)} runs (${mismatchOf(a)?.installation.gameVersion || "unknown"})`;
+      const mismatched = withUpdate.filter((a) => !!mismatchOf(a));
+      const warnings: string[] = [];
+      let targets = withUpdate;
+      if (args.all === true) {
+        targets = withUpdate.filter((a) => !mismatchOf(a));
+        skipped.push(
+          ...mismatched.map((a) => ({
+            addonId: a.id,
+            name: a.name,
+            reason: `${mismatchText(a)}. Name it in addonIds to update it anyway.`,
+          })),
+        );
+      } else {
+        warnings.push(...mismatched.map((a) => `${mismatchText(a)}; updated anyway because it was named.`));
+      }
+
+      // What each update writes, learned before anything is backed up
+      const newFolders = new Map<string, string[]>(
+        await Promise.all(targets.map(async (a) => [a.id, await updateFolders(installation, a, ctx)] as const)),
+      );
+      const foldersFor = (a: Addon) => newFolders.get(a.id) ?? [];
+      const allNew = uniqueFolders(targets.flatMap(foldersFor));
+      const targetIds = new Set(targets.map((a) => a.id));
+      const others = (list: Addon[]) => list.filter((a) => !targetIds.has(a.id));
+
       if (args.preview === true) {
         const disk = await diskOf(installation);
+        const notes = warnings.map((w) => `warning: ${w}`);
+        if (args.all === true && mismatched.length > 0) {
+          const names = mismatched.map((a) => a.name).join(", ");
+          notes.unshift(`skipped for their game version (name them in addonIds to force): ${names}`);
+        }
+        if (targets.length === 0) {
+          notes.unshift("nothing to update");
+        }
         const preview: ChangePreview = {
-          action: `update_addons: ${targets.length} addon(s)${targets.length === 0 ? ", nothing to update" : ""}`,
+          action: [`update_addons: ${targets.length} addon(s)`, ...notes].join("; "),
           installation: nameOf(installation),
-          add: targets.map((a) => lineOf(a, a.latestVersion)),
-          remove: targets.map((a) => lineOf(a)),
-          foldersReplaced: onDisk(targets.flatMap(foldersOf), disk),
-          settingsCarryOver: true,
+          add: targets.map((a) => ({ ...lineOf(a, a.latestVersion), folders: foldersFor(a) })),
+          remove: [
+            ...targets.map((a) => lineOf(a)),
+            ...others(droppedUnknowns(installed, allNew)).map((a) => lineOf(a)),
+          ],
+          foldersReplaced: onDisk([...targets.flatMap(foldersOf), ...allNew], disk),
+          settingsCarryOver: combineCarryOver(targets.map((a) => carryOver(foldersOf(a), foldersFor(a)))),
         };
         return preview;
       }
@@ -493,8 +617,8 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       const backup = await backupService.create(
         "update_addons",
         installation,
-        targets,
-        [],
+        [...targets, ...others(claimants(installed, allNew))],
+        allNew,
         `update_addons ${listNames(targets.map((a) => `${a.name} ${ver(a.installedVersion)} -> ${ver(a.latestVersion)}`))}`,
       );
       const failed: { addonId: string; name: string; error: string }[] = [];
@@ -528,6 +652,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
           ? { failed, note: `Some updates failed; rollback ${backup.id} undoes the ones that went through.` }
           : {}),
         ...(skipped.length > 0 ? { skipped } : {}),
+        ...(warnings.length > 0 ? { warnings } : {}),
       };
     },
 
@@ -582,7 +707,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       };
       refuseOther(canonicalProvider(providerArg), externalId);
 
-      const plan = await planInstall(installation, providerArg, externalId, str(args, "version"));
+      const plan = await planInstall(installation, providerArg, externalId, str(args, "version"), ctx);
       refuseOther(plan.line.provider, plan.line.externalId);
       const folders = plan.line.folders;
 
@@ -647,7 +772,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         throw new Error(`${ext.providerName} ${ext.id} is already installed as ${other.name} (addonId ${other.id}).`);
       }
 
-      const plan = await planInstall(installation, ext.providerName, ext.id, undefined);
+      const plan = await planInstall(installation, ext.providerName, ext.id, undefined, ctx);
       const folders = plan.line.folders;
 
       if (args.preview === true) {
@@ -820,23 +945,37 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       const conflicts = summary.comparisons.filter((c) => c.state === "conflict").length;
       const same = summary.comparisons.filter((c) => c.state === "no-change").length;
 
-      // WowUp's import installs each addon's latest file, so that is what the preview and backup cover
+      // WowUp's import installs each addon's latest file, so that is what the preview and backup cover. One that
+      // can't be looked up fails the call before any backup; one the provider doesn't have installs nothing.
       const lines: AddonLine[] = await Promise.all(
         toAdd.map(async (c) => {
           let result: AddonSearchResult | undefined;
-          let file: AddonSearchResultFile | undefined;
           try {
             result = await providerOf(c.imported.provider_name).getById(c.imported.id, installation);
-            file = getLatestFile(result, installation.defaultAddonChannelType);
           } catch (e) {
-            console.error(`[agent] import lookup failed for ${c.imported.provider_name} ${c.imported.id}`, e);
+            throw new Error(
+              `Could not look up ${c.imported.provider_name} ${c.imported.id} (${c.imported.name}): ${message(e)}. Nothing was changed.`,
+            );
+          }
+          const file = result ? getLatestFile(result, installation.defaultAddonChannelType) : undefined;
+          const name = result?.name ?? c.imported.name;
+          let folders: string[] = [];
+          if (file) {
+            const release = {
+              provider: c.imported.provider_name,
+              externalId: c.imported.id,
+              name,
+              version: file.version,
+              url: file.downloadUrl,
+            };
+            folders = await foldersOfRelease(file.folders, release, ctx);
           }
           return {
-            name: result?.name ?? c.imported.name,
+            name,
             provider: result?.providerName ?? c.imported.provider_name,
             externalId: result ? String(result.externalId) : c.imported.id,
             version: file?.version ?? "",
-            folders: file?.folders ?? [],
+            folders,
           };
         }),
       );
@@ -852,7 +991,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
           add: lines,
           remove: droppedUnknowns(installed, folders).map((a) => lineOf(a)),
           foldersReplaced: onDisk(folders, disk),
-          settingsCarryOver: installCarryOver(folders, disk),
+          settingsCarryOver: installCarryOver(folders, disk, droppedUnknowns(installed, folders)),
         };
         return preview;
       }

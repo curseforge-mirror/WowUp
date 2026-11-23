@@ -110,6 +110,9 @@ export class AgentBridgeService {
 
     this.registerTools(
       createChangeTools({
+        applicationFolderPath: this._wowUpService.applicationFolderPath,
+        fileService: this._fileService,
+        downloadService: this._downloadService,
         addonService: this._addonService,
         brokerService: this._addonBrokerService,
         backupService: this._backupService,
