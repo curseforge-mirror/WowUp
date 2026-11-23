@@ -43,7 +43,7 @@ describe("health tools", () => {
       getSelected: () => undefined,
       wtfService: { getWtfPath: () => WTF },
       fileService: {
-        listDirectories: async () => [ACC],
+        listDirectories: async () => ["ACC"], // bare names, like the real IPC handler
         pathExists: async (p: string) => p === BG,
         readFile: async () => FILE,
       },

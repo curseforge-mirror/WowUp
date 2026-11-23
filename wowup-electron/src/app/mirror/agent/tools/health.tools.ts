@@ -87,7 +87,7 @@ export function createHealthTools(deps: HealthDeps): AgentToolSet {
     }
     const errors: RawError[] = [];
     for (const folder of folders) {
-      const file = join(folder, "SavedVariables", BUGGRABBER_FILE);
+      const file = join(accounts, folder, "SavedVariables", BUGGRABBER_FILE);
       if (!(await fileService.pathExists(file))) {
         continue;
       }
