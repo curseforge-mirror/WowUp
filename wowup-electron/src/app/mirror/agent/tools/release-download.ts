@@ -1,11 +1,18 @@
 import { isAbsolute, join, relative, resolve, sep } from "path";
 import { DownloadAuth } from "wowup-lib-core";
 
+import { delayMs } from "../../../utils/time.utils";
 import { agentSandboxPath } from "../agent-settings";
 import { canonicalProvider } from "./discovery.tools";
 
 /** Folders WowUp's install skips when it copies a release into AddOns */
 const IGNORED_FOLDER_NAMES = ["__MACOSX"];
+
+/** As WowUp's installer (addon-install.service.ts): a failed download is retried 3 times, after 1, 2 and 4 seconds */
+export const DOWNLOAD_RETRIES = 3;
+
+/** How many releases are downloaded at once to learn their folders */
+export const FOLDER_DOWNLOADS_AT_ONCE = 3;
 
 export interface ReleaseDownloadDeps {
   applicationFolderPath: string;
@@ -24,6 +31,8 @@ export interface ReleaseDownloadDeps {
     }): Promise<string>;
   };
   getProvider: (name: string) => { getDownloadAuth?(): Promise<DownloadAuth | undefined> } | undefined;
+  /** Waits between download retries (tests pass one that doesn't wait) */
+  delay?: (ms: number) => Promise<void>;
 }
 
 export interface ReleaseFolderDeps extends ReleaseDownloadDeps {
@@ -54,15 +63,41 @@ export function safeName(text: string): string {
   return text.replace(/[^A-Za-z0-9._-]+/g, "_");
 }
 
+/** Runs at most `max` of the given tasks at a time, in the order they were queued */
+export function createLimiter(max: number): <T>(task: () => Promise<T>) => Promise<T> {
+  let running = 0;
+  const waiting: Array<() => void> = [];
+  return async <T>(task: () => Promise<T>): Promise<T> => {
+    if (running >= max) {
+      await new Promise<void>((go) => waiting.push(go));
+    } else {
+      running += 1;
+    }
+    try {
+      return await task();
+    } finally {
+      const next = waiting.shift();
+      if (next) {
+        // The slot passes straight to the next task
+        next();
+      } else {
+        running -= 1;
+      }
+    }
+  };
+}
+
 /**
  * Download a release zip with the provider's download auth and unzip it to `<sandbox>/<root>` (replacing what was
- * there). Returns the unzipped folder's path. Only the sandbox is written to.
+ * there). A failed download is retried as WowUp's installer does. Returns the unzipped folder's path. Only the sandbox
+ * is written to.
  */
 export async function downloadToSandbox(
   deps: ReleaseDownloadDeps,
   provider: string,
   root: string,
   url: string,
+  onRetry?: (retry: number, waitMs: number, error: unknown) => void,
 ): Promise<string> {
   if (!url) {
     throw new Error("This release has no download URL (the provider does not allow direct downloads).");
@@ -82,12 +117,21 @@ export async function downloadToSandbox(
   } catch (e) {
     console.error("Agent download auth failed", e);
   }
-  const saved = await deps.downloadService.downloadZipFile({
-    auth,
-    fileName: zipName,
-    outputFolder: sandboxBase,
-    url,
-  });
+  const delay = deps.delay ?? delayMs;
+  let saved: string;
+  for (let retry = 0; ; retry++) {
+    try {
+      saved = await deps.downloadService.downloadZipFile({ auth, fileName: zipName, outputFolder: sandboxBase, url });
+      break;
+    } catch (e) {
+      if (retry === DOWNLOAD_RETRIES) {
+        throw e;
+      }
+      const waitMs = 1000 * Math.pow(2, retry);
+      onRetry?.(retry + 1, waitMs, e);
+      await delay(waitMs);
+    }
+  }
   try {
     await fileService.unzipFile(saved || zipPath, folder);
   } finally {
@@ -109,12 +153,13 @@ export async function releaseFolders(
   externalId: string,
   version: string,
   url: string,
+  onRetry?: (retry: number, waitMs: number, error: unknown) => void,
 ): Promise<string[]> {
   probeCount += 1;
   const root = safeName(`folders-${provider}-${externalId}-${version}-${Date.now().toString(36)}-${probeCount}`);
   const folder = resolveScopedPath(agentSandboxPath(deps.applicationFolderPath), root);
   try {
-    await downloadToSandbox(deps, provider, root, url);
+    await downloadToSandbox(deps, provider, root, url, onRetry);
     const dirs = (await deps.fileService.listDirectories(folder)) ?? [];
     return dirs.filter((d) => !IGNORED_FOLDER_NAMES.includes(d));
   } finally {

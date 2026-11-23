@@ -68,11 +68,15 @@ describe("change tools", () => {
       results?: Record<string, any>;
       /** download url → the top-level directories its zip unpacks to */
       zips?: Record<string, string[]>;
+      /** download url → how many times its download fails before it works */
+      flaky?: Record<string, number>;
       mismatched?: string[];
     } = {},
   ) => {
     let records: any[] = (opts.records ?? []).map((r) => ({ ...r }));
     const zips = opts.zips ?? {};
+    const flaky = { ...(opts.flaky ?? {}) };
+    const downloads = { active: 0, most: 0 };
     const log: string[] = [];
     let newIds = 0;
     const upsert = (a: any) => {
@@ -150,12 +154,23 @@ describe("change tools", () => {
     const unzipped: Record<string, string[]> = {};
     const downloadService = {
       downloadZipFile: jasmine.createSpy("downloadZipFile").and.callFake(async (o: any) => {
-        if (!(o.url in zips)) {
-          throw new Error(`unexpected download ${o.url}`);
+        downloads.active += 1;
+        downloads.most = Math.max(downloads.most, downloads.active);
+        try {
+          await new Promise((r) => setTimeout(r, 0));
+          if ((flaky[o.url] ?? 0) > 0) {
+            flaky[o.url] -= 1;
+            throw new Error(`503 for ${o.url}`);
+          }
+          if (!(o.url in zips)) {
+            throw new Error(`unexpected download ${o.url}`);
+          }
+          const zip = `${o.outputFolder}/${o.fileName}`;
+          zipOf[zip] = o.url;
+          return zip;
+        } finally {
+          downloads.active -= 1;
         }
-        const zip = `${o.outputFolder}/${o.fileName}`;
-        zipOf[zip] = o.url;
-        return zip;
       }),
     };
     const fileService = {
@@ -199,10 +214,12 @@ describe("change tools", () => {
       getById: jasmine.createSpy("getById").and.callFake(async (externalId: string) => resultFor(externalId)),
       getDownloadAuth: async () => undefined,
     };
+    const delay = jasmine.createSpy("delay").and.resolveTo(undefined);
     const deps = {
       applicationFolderPath: "C:/data",
       fileService,
       downloadService,
+      delay,
       addonService,
       brokerService,
       backupService,
@@ -226,12 +243,30 @@ describe("change tools", () => {
       provider,
       fileService,
       downloadService,
+      delay,
+      downloads,
       ctx,
       log,
       records: () => records,
       sandboxLeft: () => Object.keys(unzipped),
     };
   };
+
+  /** What GitHubAddonProvider.getById returns: its one file lists the repository name, not the zip's folders */
+  const githubResult = (repo: string, version: string, url: string): any => ({
+    name: repo.split("/")[1],
+    providerName: "GitHub",
+    externalId: repo,
+    files: [
+      file({
+        externalId: undefined,
+        version,
+        folders: [repo.split("/")[1]],
+        downloadUrl: url,
+        gameVersion: "",
+      }),
+    ],
+  });
 
   const mutators = (m: ReturnType<typeof make>) => [
     m.backupService.create,
@@ -655,5 +690,213 @@ describe("change tools", () => {
     const forced: any = await named.tools.update_addons({ addonIds: ["a1"] }, named.ctx);
     expect(named.addonService.updateAddon.calls.allArgs().map((a: any[]) => a[0].id)).toEqual(["a1"]);
     expect(forced.warnings).toEqual([jasmine.stringMatching(/Alpha .*2\.5\.1.*updated anyway/)]);
+  });
+
+  it("a GitHub release's listed folder is its repository name, so the zip is downloaded to learn its folders", async () => {
+    const url = "https://api.github.com/repos/srhinos/TipTac-Forever/releases/assets/1";
+    const tipTac = ["TipTac", "TipTacItemRef", "TipTacOptions", "TipTacTalents"];
+    const unknown = rec({
+      id: "u1",
+      name: "TipTac",
+      providerName: "Unknown",
+      externalId: "",
+      installedFolderList: ["TipTac"],
+    });
+    const opts = {
+      records: [unknown, rec({ id: "r2", name: "Other", installedFolderList: ["Other"] })],
+      disk: ["TipTac", "TipTacItemRef", "Other"],
+      result: githubResult("srhinos/TipTac-Forever", "TipTac-Forever-26.11.zip", url),
+      zips: { [url]: tipTac },
+    };
+
+    const p = make(opts);
+    const preview: any = await p.tools.install_addon(
+      { provider: "GitHub", externalId: "srhinos/TipTac-Forever", preview: true },
+      p.ctx,
+    );
+    expect(preview.add[0].folders).toEqual(tipTac);
+    expect(preview.foldersReplaced).toEqual(["TipTac", "TipTacItemRef"]);
+    expect(preview.remove.map((l: any) => l.name)).toEqual(["TipTac"]);
+    expect(p.downloadService.downloadZipFile).toHaveBeenCalledOnceWith(jasmine.objectContaining({ url }));
+
+    // the backup covers every folder the zip writes, and the Unknown record WowUp drops for it
+    const m = make(opts);
+    await m.tools.install_addon({ provider: "GitHub", externalId: "srhinos/TipTac-Forever" }, m.ctx);
+    expect(m.backupService.create).toHaveBeenCalledOnceWith(
+      "install_addon",
+      INSTALL,
+      [jasmine.objectContaining({ id: "u1" })],
+      tipTac,
+      jasmine.any(String),
+    );
+
+    // a routine update of the installed GitHub addon keeps its folders, so its settings carry over
+    const u = make({
+      records: [
+        rec({
+          id: "g1",
+          name: "TipTac-Forever",
+          providerName: "GitHub",
+          externalId: "srhinos/TipTac-Forever",
+          installedVersion: "TipTac-Forever-26.10.zip",
+          latestVersion: "TipTac-Forever-26.11.zip",
+          downloadUrl: url,
+          installedFolderList: tipTac,
+        }),
+      ],
+      disk: tipTac,
+      result: opts.result,
+      zips: opts.zips,
+    });
+    const update: any = await u.tools.update_addons({ addonIds: ["g1"], preview: true }, u.ctx);
+    expect(update.add[0].folders).toEqual(tipTac);
+    expect(update.settingsCarryOver).toBeTrue();
+  });
+
+  it("a Zip release's listed folder is the file name, so the zip is downloaded to learn its folders", async () => {
+    const url = "https://example.test/pack-1.0.zip";
+    const m = make({
+      result: {
+        name: "pack-1.0.zip",
+        providerName: "Zip",
+        externalId: url,
+        files: [file({ folders: ["pack-1.0"], downloadUrl: url })],
+      },
+      zips: { [url]: ["PackCore", "PackExtras"] },
+    });
+    const preview: any = await m.tools.install_addon({ provider: "Zip", externalId: url, preview: true }, m.ctx);
+    expect(preview.add[0].folders).toEqual(["PackCore", "PackExtras"]);
+  });
+
+  it("learns folders three downloads at a time and retries a failed download like WowUp's installer", async () => {
+    const repos = [1, 2, 3, 4, 5].map((n) => `o/r${n}`);
+    const urlOf = (repo: string) => `https://api.github.com/repos/${repo}/releases/assets/9`;
+    const m = make({
+      records: repos.map((repo, i) =>
+        rec({
+          id: `g${i + 1}`,
+          name: repo,
+          providerName: "GitHub",
+          externalId: repo,
+          latestVersion: "2.0.zip",
+          downloadUrl: urlOf(repo),
+          installedFolderList: [`F${i + 1}`],
+        }),
+      ),
+      results: Object.fromEntries(repos.map((repo) => [repo, githubResult(repo, "2.0.zip", urlOf(repo))])),
+      zips: Object.fromEntries(repos.map((repo, i) => [urlOf(repo), [`F${i + 1}`]])),
+      flaky: { [urlOf("o/r2")]: 2 },
+    });
+
+    const preview: any = await m.tools.update_addons({ all: true, preview: true }, m.ctx);
+
+    expect(preview.add.length).toBe(5);
+    expect(m.downloads.most).toBe(3);
+    const r2 = m.downloadService.downloadZipFile.calls.allArgs().filter((a: any[]) => a[0].url === urlOf("o/r2"));
+    expect(r2.length).toBe(3);
+    expect(m.delay.calls.allArgs()).toEqual([[1000], [2000]]);
+    expect(m.ctx.progress).toHaveBeenCalledWith(jasmine.stringMatching(/o\/r2.*retry 1 of 3/));
+  });
+
+  it("update_addons skips a target whose release can't be downloaded and updates the rest", async () => {
+    const good = "https://api.github.com/repos/o/good/releases/assets/1";
+    const bad = "https://api.github.com/repos/o/bad/releases/assets/2";
+    const m = make({
+      records: [
+        rec({
+          id: "g1",
+          name: "Good",
+          providerName: "GitHub",
+          externalId: "o/good",
+          latestVersion: "2.zip",
+          downloadUrl: good,
+          installedFolderList: ["Good"],
+        }),
+        rec({
+          id: "g2",
+          name: "Bad",
+          providerName: "GitHub",
+          externalId: "o/bad",
+          latestVersion: "2.zip",
+          downloadUrl: bad,
+          installedFolderList: ["Bad"],
+        }),
+      ],
+      results: { "o/good": githubResult("o/good", "2.zip", good), "o/bad": githubResult("o/bad", "2.zip", bad) },
+      zips: { [good]: ["Good"] },
+    });
+
+    const preview: any = await m.tools.update_addons({ all: true, preview: true }, m.ctx);
+    expect(preview.add.map((l: any) => l.name)).toEqual(["Good"]);
+    expect(preview.action).toMatch(/skipped.*Bad/);
+
+    const out: any = await m.tools.update_addons({ all: true }, m.ctx);
+    expect(m.addonService.updateAddon.calls.allArgs().map((a: any[]) => a[0].id)).toEqual(["g1"]);
+    expect(m.backupService.create.calls.mostRecent().args[2].map((a: any) => a.id)).toEqual(["g1"]);
+    expect(out.changed.map((c: any) => c.addonId)).toEqual(["g1"]);
+    expect(out.skipped).toEqual([
+      {
+        addonId: "g2",
+        name: "Bad",
+        reason: jasmine.stringMatching(/Could not download Bad .*nothing was changed for it/i),
+      },
+    ]);
+
+    // when none can be downloaded nothing is backed up or changed
+    const none = make({
+      records: [m.records().find((r) => r.id === "g2")],
+      results: { "o/bad": githubResult("o/bad", "2.zip", bad) },
+    });
+    const nothing: any = await none.tools.update_addons({ addonIds: ["g2"] }, none.ctx);
+    expect(nothing.changed).toEqual([]);
+    expect(nothing.skipped.map((s: any) => s.addonId)).toEqual(["g2"]);
+    mutators(none).forEach((spy) => expect(spy).not.toHaveBeenCalled());
+  });
+
+  it("import_addons skips a line whose release can't be downloaded and imports the rest", async () => {
+    const good = "https://api.github.com/repos/o/good/releases/assets/1";
+    const bad = "https://api.github.com/repos/o/bad/releases/assets/2";
+    const m = make({
+      results: { "o/good": githubResult("o/good", "2.zip", good), "o/bad": githubResult("o/bad", "2.zip", bad) },
+      zips: { [good]: ["Good"] },
+    });
+    m.brokerService.installImportSummary.and.callFake(async (summary: any) => {
+      for (const c of summary.comparisons.filter((x: any) => x.state === "added")) {
+        await m.addonService.saveAddon({
+          id: `imp-${c.imported.id}`,
+          name: c.imported.name,
+          providerName: "GitHub",
+          externalId: c.imported.id,
+          installedVersion: "2.zip",
+          installationId: "i1",
+          installedFolderList: ["Good"],
+        });
+      }
+    });
+    const json = JSON.stringify({
+      client_type: "ClassicEra",
+      addons: [
+        { id: "o/good", name: "good", provider_name: "GitHub" },
+        { id: "o/bad", name: "bad", provider_name: "GitHub" },
+      ],
+    });
+
+    const preview: any = await m.tools.import_addons({ text: json, preview: true }, m.ctx);
+    expect(preview.add.map((l: any) => l.externalId)).toEqual(["o/good"]);
+    expect(preview.action).toMatch(/skipped.*o\/bad/);
+
+    const out: any = await m.tools.import_addons({ text: json }, m.ctx);
+    const passed = m.brokerService.installImportSummary.calls.mostRecent().args[0];
+    expect(passed.comparisons.map((c: any) => c.imported.id)).toEqual(["o/good"]);
+    expect(m.backupService.create.calls.mostRecent().args[3]).toEqual(["Good"]);
+    expect(out.changed.map((c: any) => c.externalId)).toEqual(["o/good"]);
+    expect(out.skipped).toEqual([
+      {
+        name: "bad",
+        provider: "GitHub",
+        externalId: "o/bad",
+        reason: jasmine.stringMatching(/Could not download .*nothing was changed for it/i),
+      },
+    ]);
   });
 });

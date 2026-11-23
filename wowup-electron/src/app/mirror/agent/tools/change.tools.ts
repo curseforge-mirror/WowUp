@@ -9,7 +9,7 @@ import {
   WowInstallation,
 } from "wowup-lib-core";
 
-import { ADDON_PROVIDER_UNKNOWN } from "../../../../common/constants";
+import { ADDON_PROVIDER_GITHUB, ADDON_PROVIDER_UNKNOWN, ADDON_PROVIDER_ZIP } from "../../../../common/constants";
 import { AddonInstallState } from "../../../models/wowup/addon-install-state";
 import { ExportPayload, ImportSummary, InstallEvent } from "../../../services/addons/addon-broker.service";
 import { needsUpdate } from "../../../utils/addon.utils";
@@ -17,7 +17,13 @@ import { getLatestFile } from "../../../utils/search-result.utils";
 import { AgentToolContext, AgentToolSet } from "../agent-tool";
 import { InstallationNameDeps, resolveAddon, resolveInstallationFor } from "../resolve";
 import { canonicalProvider } from "./discovery.tools";
-import { ReleaseFolderDeps, releaseFolders } from "./release-download";
+import {
+  createLimiter,
+  DOWNLOAD_RETRIES,
+  FOLDER_DOWNLOADS_AT_ONCE,
+  ReleaseFolderDeps,
+  releaseFolders,
+} from "./release-download";
 import { CurseVersionClient, listVersions, toSearchResultFile } from "./versions";
 
 /** One addon in a preview: what a change adds or removes */
@@ -122,6 +128,12 @@ interface InstallPlan {
   pinned: boolean;
   line: AddonLine;
 }
+
+/**
+ * Providers whose folder list is a placeholder, not the zip's folders: GitHub lists the repository name, Zip the file
+ * name. Their releases are always downloaded to learn what they write.
+ */
+const PLACEHOLDER_FOLDER_PROVIDERS = [ADDON_PROVIDER_GITHUB, ADDON_PROVIDER_ZIP].map((p) => p.toLowerCase());
 
 const IMPORT_ERRORS: Record<string, string> = {
   GENERIC_IMPORT_ERROR: "The import lists no addons.",
@@ -268,30 +280,63 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       ctx.progress(`${AddonInstallState[state] ?? "Installing"} ${name} ${Math.round(percent)}%`);
   };
 
+  /** Releases downloaded to learn their folders, a few at a time */
+  const learnSlot = createLimiter(FOLDER_DOWNLOADS_AT_ONCE);
+
   /**
-   * The top-level folders a release writes. Providers that list none before download (GitHub, Wago, Zip) are
-   * downloaded to the sandbox and read, so previews and backups cover what the install overwrites. Only the sandbox is
-   * written to; a failed download fails the call before anything is backed up or changed.
+   * The top-level folders a release writes. Releases whose provider lists none before download (Wago, WowInterface)
+   * or only a placeholder (GitHub, Zip) are downloaded to the sandbox and read, so previews and backups cover what
+   * the install overwrites. Only the sandbox is written to; a download that still fails after WowUp's retries
+   * throws before anything is backed up or changed.
    */
-  const foldersOfRelease = async (
+  const learnFolders = async (
     listed: string[] | undefined,
     release: { provider: string; externalId: string; name: string; version: string; url: string },
     ctx: AgentToolContext,
   ): Promise<string[]> => {
-    if (listed && listed.length > 0) {
+    if (listed && listed.length > 0 && !PLACEHOLDER_FOLDER_PROVIDERS.includes(release.provider.toLowerCase())) {
       return listed;
     }
-    ctx.progress(`Downloading ${release.name} ${release.version} to see which folders it writes`);
+    const what = `${release.name} ${release.version}`;
     try {
-      const folders = await releaseFolders(deps, release.provider, release.externalId, release.version, release.url);
+      const folders = await learnSlot(() => {
+        ctx.progress(`Downloading ${what} to see which folders it writes`);
+        return releaseFolders(
+          deps,
+          release.provider,
+          release.externalId,
+          release.version,
+          release.url,
+          (retry, waitMs, e) =>
+            ctx.progress(
+              `Downloading ${what} failed (${message(e)}); retry ${retry} of ${DOWNLOAD_RETRIES} in ${Math.round(waitMs / 1000)} s`,
+            ),
+        );
+      });
       if (folders.length === 0) {
         throw new Error("the zip has no folders");
       }
       return folders;
     } catch (e) {
-      throw new Error(
-        `Could not download ${release.name} ${release.version} to see which folders it writes: ${message(e)}. Nothing was changed.`,
-      );
+      throw new Error(`Could not download ${what} to see which folders it writes: ${message(e)}.`);
+    }
+  };
+
+  /** One change's release: a failed download fails the call */
+  const foldersOfRelease = async (...args: Parameters<typeof learnFolders>): Promise<string[]> => {
+    try {
+      return await learnFolders(...args);
+    } catch (e) {
+      throw new Error(`${message(e)} Nothing was changed.`);
+    }
+  };
+
+  /** One target of a batch: its folders, or why they couldn't be learned (the target is then left out, unchanged) */
+  const batchFolders = async (learn: () => Promise<string[]>): Promise<string[] | { error: string }> => {
+    try {
+      return await learn();
+    } catch (e) {
+      return { error: `${message(e)} Nothing was changed for it.` };
     }
   };
 
@@ -371,7 +416,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
     } catch (e) {
       console.error(`[agent] could not look up the release ${a.name} updates to`, e);
     }
-    return foldersOfRelease(
+    return learnFolders(
       listed,
       {
         provider: a.providerName ?? "",
@@ -573,14 +618,31 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
             reason: `${mismatchText(a)}. Name it in addonIds to update it anyway.`,
           })),
         );
-      } else {
-        warnings.push(...mismatched.map((a) => `${mismatchText(a)}; updated anyway because it was named.`));
       }
 
-      // What each update writes, learned before anything is backed up
-      const newFolders = new Map<string, string[]>(
-        await Promise.all(targets.map(async (a) => [a.id, await updateFolders(installation, a, ctx)] as const)),
+      // What each update writes, learned before anything is backed up. One whose release can't be downloaded is
+      // left out (skipped, unchanged); the others go ahead.
+      const learned = await Promise.all(
+        targets.map(async (a) => [a, await batchFolders(() => updateFolders(installation, a, ctx))] as const),
       );
+      const newFolders = new Map<string, string[]>();
+      const unlearned: Addon[] = [];
+      for (const [a, folders] of learned) {
+        if (Array.isArray(folders)) {
+          newFolders.set(a.id, folders);
+        } else {
+          unlearned.push(a);
+          skipped.push({ addonId: a.id, name: a.name, reason: folders.error });
+        }
+      }
+      targets = targets.filter((a) => newFolders.has(a.id));
+      if (args.all !== true) {
+        warnings.push(
+          ...mismatched
+            .filter((a) => newFolders.has(a.id))
+            .map((a) => `${mismatchText(a)}; updated anyway because it was named.`),
+        );
+      }
       const foldersFor = (a: Addon) => newFolders.get(a.id) ?? [];
       const allNew = uniqueFolders(targets.flatMap(foldersFor));
       const targetIds = new Set(targets.map((a) => a.id));
@@ -589,6 +651,11 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       if (args.preview === true) {
         const disk = await diskOf(installation);
         const notes = warnings.map((w) => `warning: ${w}`);
+        if (unlearned.length > 0) {
+          notes.unshift(
+            `skipped, their release could not be downloaded to see which folders it writes: ${unlearned.map((a) => a.name).join(", ")}`,
+          );
+        }
         if (args.all === true && mismatched.length > 0) {
           const names = mismatched.map((a) => a.name).join(", ");
           notes.unshift(`skipped for their game version (name them in addonIds to force): ${names}`);
@@ -946,8 +1013,9 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       const same = summary.comparisons.filter((c) => c.state === "no-change").length;
 
       // WowUp's import installs each addon's latest file, so that is what the preview and backup cover. One that
-      // can't be looked up fails the call before any backup; one the provider doesn't have installs nothing.
-      const lines: AddonLine[] = await Promise.all(
+      // can't be looked up fails the call before any backup; one whose release can't be downloaded to learn its
+      // folders is left out of the import (skipped, unchanged); one the provider doesn't have installs nothing.
+      const planned = await Promise.all(
         toAdd.map(async (c) => {
           let result: AddonSearchResult | undefined;
           try {
@@ -959,7 +1027,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
           }
           const file = result ? getLatestFile(result, installation.defaultAddonChannelType) : undefined;
           const name = result?.name ?? c.imported.name;
-          let folders: string[] = [];
+          let folders: string[] | { error: string } = [];
           if (file) {
             const release = {
               provider: c.imported.provider_name,
@@ -968,20 +1036,30 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
               version: file.version,
               url: file.downloadUrl,
             };
-            folders = await foldersOfRelease(file.folders, release, ctx);
+            folders = await batchFolders(() => learnFolders(file.folders, release, ctx));
           }
-          return {
+          const line: AddonLine = {
             name,
             provider: result?.providerName ?? c.imported.provider_name,
             externalId: result ? String(result.externalId) : c.imported.id,
             version: file?.version ?? "",
-            folders,
+            folders: Array.isArray(folders) ? folders : [],
           };
+          return { comparison: c, line, error: Array.isArray(folders) ? undefined : folders.error };
         }),
       );
+      const kept = planned.filter((p) => p.error === undefined);
+      const lines = kept.map((p) => p.line);
+      const skipped = planned
+        .filter((p) => p.error !== undefined)
+        .map((p) => ({ name: p.line.name, provider: p.line.provider, externalId: p.line.externalId, reason: p.error }));
       const installed = await recordsOf(installation);
       const folders = uniqueFolders(lines.flatMap((l) => l.folders));
-      const action = `import_addons: installs ${toAdd.length} addon(s); ${same} already installed; ${conflicts} conflict(s) left as they are`;
+      const skippedNote =
+        skipped.length > 0
+          ? `; skipped, their release could not be downloaded to see which folders it writes: ${skipped.map((s) => `${s.provider} ${s.externalId}`).join(", ")}`
+          : "";
+      const action = `import_addons: installs ${lines.length} addon(s); ${same} already installed; ${conflicts} conflict(s) left as they are${skippedNote}`;
 
       if (args.preview === true) {
         const disk = await diskOf(installation);
@@ -995,8 +1073,8 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         };
         return preview;
       }
-      if (toAdd.length === 0) {
-        return { changed: [], note: `Nothing to import: ${action}.` };
+      if (lines.length === 0) {
+        return { changed: [], ...(skipped.length > 0 ? { skipped } : {}), note: `Nothing to import: ${action}.` };
       }
 
       const backup = await backupService.create(
@@ -1006,14 +1084,20 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         folders,
         `import_addons ${listNames(lines.map((l) => `${l.provider} ${l.externalId} ${l.name}`))}`,
       );
-      const names = new Map(toAdd.map((c, i) => [c.id, lines[i].name]));
+      // WowUp installs the summary's "added" entries; the skipped ones are taken out
+      const skippedIds = new Set(planned.filter((p) => p.error !== undefined).map((p) => p.comparison.id));
+      const toInstall: ImportSummary = {
+        ...summary,
+        comparisons: summary.comparisons.filter((c) => !skippedIds.has(c.id)),
+      };
+      const names = new Map(kept.map((p) => [p.comparison.id, p.line.name]));
       const sub = brokerService.addonInstall$.subscribe((evt) =>
         progressFor(ctx, names.get(evt.comparisonId) ?? "addon")(evt.installState, evt.progress),
       );
       let added: Addon[];
       try {
         ({ added } = await runChange(backup.id, installation, installed, "Importing addons", () =>
-          brokerService.installImportSummary(summary, installation),
+          brokerService.installImportSummary(toInstall, installation),
         ));
       } finally {
         sub.unsubscribe();
@@ -1034,6 +1118,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         ...(failed.length > 0
           ? { failed, note: `${failed.length} addon(s) did not install; rollback ${backup.id} undoes the rest.` }
           : {}),
+        ...(skipped.length > 0 ? { skipped } : {}),
       };
     },
 
