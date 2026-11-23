@@ -520,6 +520,85 @@ describe("AgentBackupService", () => {
     expect(store.get("a-baz")).toEqual(baz);
   });
 
+  it("rollback leaves alone a standalone addon for a folder a later update gave the restored addon", async () => {
+    const m = await service.create("update_addons", inst, [foo]);
+
+    // a later Foo update adds LibX; then the user installs a standalone LibX under its own record
+    store.set("a-foo", { ...foo, installedVersion: "2.0", installedFolderList: ["Foo", "Foo_Options", "LibX"] });
+    fs.put(join(ADDONS, "LibX", "libx.lua"), "libx");
+    const libx: any = { id: "a-libx", name: "LibX", installationId: "i1", installedFolderList: ["LibX"] };
+    store.set("a-libx", { ...libx });
+    jasmine.clock().tick(1000);
+
+    const r = await service.rollback(m.id);
+
+    expect(fs.read(join(ADDONS, "LibX", "libx.lua"))).toBe("libx");
+    expect(store.get("a-libx")).toEqual(libx);
+    expect(store.get("a-foo").installedFolderList).toEqual(["Foo", "Foo_Options"]);
+    expect(r.removedRecords).toBe(0);
+    expect(r.removedFolders).toEqual([]);
+  });
+
+  it("rollback leaves alone a later standalone record of a folder the restored addon also claims", async () => {
+    const fooWithLib = { ...foo, installedFolderList: ["Foo", "Foo_Options", "LibShared"] };
+    store.set("a-foo", { ...fooWithLib });
+    fs.put(join(ADDONS, "LibShared", "lib.lua"), "lib v1");
+    const m = await service.create("update_addons", inst, [fooWithLib]);
+
+    fs.put(join(ADDONS, "LibShared", "lib.lua"), "lib v2");
+    store.set("a-foo", { ...fooWithLib, installedVersion: "2.0" });
+    const ls: any = { id: "a-ls", name: "LibShared", installationId: "i1", installedFolderList: ["LibShared"] };
+    store.set("a-ls", { ...ls });
+    jasmine.clock().tick(1000);
+
+    const r = await service.rollback(m.id);
+
+    expect(store.get("a-ls")).toEqual(ls);
+    expect(store.get("a-foo").installedVersion).toBe("1.0");
+    expect(fs.read(join(ADDONS, "LibShared", "lib.lua"))).toBe("lib v1");
+    expect(r.removedRecords).toBe(0);
+  });
+
+  it("rollback removes a later record that claims only the restored folders, whatever its name", async () => {
+    const m = await service.create("remove_addon", inst, [foo]);
+
+    await fs.api().remove(join(ADDONS, "Foo"));
+    await fs.api().remove(join(ADDONS, "Foo_Options"));
+    store.delete("a-foo");
+    const other: any = {
+      id: "a-foo3",
+      name: "Foo (fork)",
+      installationId: "i1",
+      installedFolderList: ["Foo", "Foo_Options"],
+    };
+    store.set("a-foo3", { ...other });
+    fs.put(CORE, "core fork");
+    fs.put(join(ADDONS, "Foo_Options", "opt.lua"), "opt fork");
+    jasmine.clock().tick(1000);
+
+    const r = await service.rollback(m.id);
+
+    expect(store.has("a-foo3")).toBeFalse();
+    expect(store.get("a-foo").installedVersion).toBe("1.0");
+    expect(fs.read(CORE)).toBe("core v1");
+    expect(r.removedRecords).toBe(1);
+    expect(manifestOf(r.safetyBackupId).records.map((a: any) => a.id)).toEqual(["a-foo3"]);
+  });
+
+  it("rollback never removes a folder that existed when the backup was taken", async () => {
+    const m = await service.create("update_addons", inst, [foo]);
+
+    // later the record also claims the unclaimed Other folder that was already there
+    store.set("a-foo", { ...foo, installedVersion: "2.0", installedFolderList: ["Foo", "Foo_Options", "Other"] });
+    jasmine.clock().tick(1000);
+
+    const r = await service.rollback(m.id);
+
+    expect(fs.read(join(ADDONS, "Other", "x.lua"))).toBe("other");
+    expect(r.removedFolders).toEqual([]);
+    expect(store.get("a-foo").installedFolderList).toEqual(["Foo", "Foo_Options"]);
+  });
+
   it("rollback takes a safety backup first", async () => {
     const m = await service.create("update_addons", inst, [foo]);
     fs.put(CORE, "core v2");

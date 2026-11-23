@@ -596,24 +596,29 @@ export class AgentBackupService {
     const foldersOf = (a: Addon) => (a.installedFolderList ?? []).filter(isFolderName);
     const restoredNow = current.filter((a) => !!a.id && restoreIds.has(a.id));
 
-    // A record made after the backup is a reinstall of what the backup holds or the change added only when every
-    // folder it claims is one of theirs, or it is the same addon; anything else (a rescan's re-created record of
-    // another addon, a later addon bundling a shared folder) is left alone with its folders
-    const reinstallKeys = new Set([
-      ...restoreKeys,
-      ...manifest.added.folders.map(folderKey),
-      ...restoredNow.flatMap(foldersOf).map(folderKey),
-    ]);
+    // A record made after the backup is a reinstall of what the backup holds or the change added only when it
+    // claims nothing but the backup's or the change's folders and no other current record claims any of them, or
+    // it is the same addon; anything else (a rescan's re-created record of another addon, a later addon bundling a
+    // shared folder, a standalone library) is left alone with its folders
+    const reinstallKeys = new Set([...restoreKeys, ...manifest.added.folders.map(folderKey)]);
+    const claimants = new Map<string, number>();
+    for (const a of current) {
+      for (const k of new Set(foldersOf(a).map(folderKey))) {
+        claimants.set(k, (claimants.get(k) ?? 0) + 1);
+      }
+    }
     const changedAddons: Array<Pick<Addon, "name" | "providerName" | "externalId">> = [
       ...manifest.records,
       ...(manifest.added.names ?? []).map((name) => ({ name })),
     ];
     const isReinstall = (a: Addon) => {
       const claimed = a.installedFolderList ?? [];
-      return (
-        (claimed.length > 0 && claimed.every((f) => typeof f === "string" && reinstallKeys.has(folderKey(f)))) ||
-        changedAddons.some((c) => sameAddon(a, c))
-      );
+      const onlyTheirs =
+        claimed.length > 0 &&
+        claimed.every(
+          (f) => isFolderName(f) && reinstallKeys.has(folderKey(f)) && (claimants.get(folderKey(f)) ?? 0) <= 1,
+        );
+      return onlyTheirs || changedAddons.some((c) => sameAddon(a, c));
     };
 
     // Records to remove: what the change added, and later reinstalls (two records would otherwise claim one folder)
