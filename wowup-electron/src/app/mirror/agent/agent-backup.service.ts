@@ -54,6 +54,8 @@ export interface BackupManifest {
   undo: string;
   /** Ids of the installation's addon records when the backup was taken; later ones are told apart by this */
   recordIdsAtBackup?: string[];
+  /** Entries in the AddOns folder when the backup was taken; rollback never removes one it doesn't restore */
+  foldersAtBackup?: string[];
   /** The safety backup taken by the rollback that left SavedVariables pending */
   safetyBackupId?: string;
 }
@@ -126,6 +128,19 @@ function unique(values: string[]): string[] {
 
 function isFolderName(name: unknown): name is string {
   return typeof name === "string" && name.trim() !== "" && name !== "." && name !== ".." && !/[\\/:\0]/.test(name);
+}
+
+/** Same addon: same provider and external id, or the same name */
+function sameAddon(
+  a: Pick<Addon, "name" | "providerName" | "externalId">,
+  b: Pick<Addon, "name" | "providerName" | "externalId">,
+): boolean {
+  const name = (n: string | undefined) => (n ?? "").trim().toLowerCase();
+  const byProvider =
+    !!a.externalId &&
+    a.externalId === b.externalId &&
+    (a.providerName ?? "").toLowerCase() === (b.providerName ?? "").toLowerCase();
+  return byProvider || (name(a.name) !== "" && name(a.name) === name(b.name));
 }
 
 function assertFolderName(name: unknown): string {
@@ -370,6 +385,10 @@ export class AgentBackupService {
 
     try {
       const addonsPath = this._warcraftService.getAddonFolderPath(o.installation);
+      // readdir: every entry by name, symlinks included and never resolved, so a dangling link can't fail it
+      const foldersAtBackup = (await this._fileService.pathExists(addonsPath))
+        ? await this._fileService.readdir(addonsPath)
+        : [];
       const copied: string[] = [];
       const absent: string[] = [];
       for (const folder of o.folders) {
@@ -412,6 +431,7 @@ export class AgentBackupService {
         added: { addonIds: o.addedIds ?? [], folders: absent },
         undo: `rollback ${id}`,
         recordIdsAtBackup,
+        foldersAtBackup,
       };
       if (o.summary) {
         manifest.summary = o.summary;
@@ -572,24 +592,46 @@ export class AgentBackupService {
     const addedIds = new Set(manifest.added.addonIds);
     const knownIds = new Set(manifest.recordIdsAtBackup ?? current.map((a) => a.id));
     const restoreKeys = new Set(manifest.folders.map(folderKey));
-    const affectedKeys = new Set([...restoreKeys, ...manifest.added.folders.map(folderKey)]);
+    const existedKeys = new Set((manifest.foldersAtBackup ?? []).map(folderKey));
     const foldersOf = (a: Addon) => (a.installedFolderList ?? []).filter(isFolderName);
+    const restoredNow = current.filter((a) => !!a.id && restoreIds.has(a.id));
 
-    // Records to remove: what the change added, and records made after the backup that claim a folder this
-    // rollback restores or removes (a reinstall under a new id would otherwise leave two records on one folder)
+    // A record made after the backup is a reinstall of what the backup holds or the change added only when every
+    // folder it claims is one of theirs, or it is the same addon; anything else (a rescan's re-created record of
+    // another addon, a later addon bundling a shared folder) is left alone with its folders
+    const reinstallKeys = new Set([
+      ...restoreKeys,
+      ...manifest.added.folders.map(folderKey),
+      ...restoredNow.flatMap(foldersOf).map(folderKey),
+    ]);
+    const changedAddons: Array<Pick<Addon, "name" | "providerName" | "externalId">> = [
+      ...manifest.records,
+      ...(manifest.added.names ?? []).map((name) => ({ name })),
+    ];
+    const isReinstall = (a: Addon) => {
+      const claimed = a.installedFolderList ?? [];
+      return (
+        (claimed.length > 0 && claimed.every((f) => typeof f === "string" && reinstallKeys.has(folderKey(f)))) ||
+        changedAddons.some((c) => sameAddon(a, c))
+      );
+    };
+
+    // Records to remove: what the change added, and later reinstalls (two records would otherwise claim one folder)
     const removeRecords = current.filter(
-      (a) =>
-        !restoreIds.has(a.id) &&
-        (addedIds.has(a.id) || (!knownIds.has(a.id) && foldersOf(a).some((f) => affectedKeys.has(folderKey(f))))),
+      (a) => !!a.id && !restoreIds.has(a.id) && (addedIds.has(a.id) || (!knownIds.has(a.id) && isReinstall(a))),
     );
-    const touched = [...current.filter((a) => restoreIds.has(a.id)), ...removeRecords];
+    const touched = [...restoredNow, ...removeRecords];
     const touchedIds = new Set(touched.map((a) => a.id));
-    const keptKeys = new Set(current.filter((a) => !touchedIds.has(a.id)).flatMap((a) => foldersOf(a).map(folderKey)));
-    // Folders to remove: what the change added and what the touched records claim now (a later update may have
-    // added folders), except folders being restored and folders an addon this rollback doesn't touch still claims
-    const removeFolders = uniqueFolders([...manifest.added.folders, ...touched.flatMap(foldersOf)]).filter(
-      (f) => !restoreKeys.has(folderKey(f)) && !keptKeys.has(folderKey(f)),
+    const keptKeys = new Set(
+      current.filter((a) => !a.id || !touchedIds.has(a.id)).flatMap((a) => foldersOf(a).map(folderKey)),
     );
+    // Folders to remove: what the change added and what the touched records claim now (a later update may have
+    // added folders). Never one being restored, one an addon this rollback doesn't touch still claims, or one
+    // that already existed when the backup was taken (it can't be put back, so it isn't taken away)
+    const removeFolders = uniqueFolders([...manifest.added.folders, ...touched.flatMap(foldersOf)]).filter((f) => {
+      const k = folderKey(f);
+      return !restoreKeys.has(k) && !keptKeys.has(k) && !existedKeys.has(k);
+    });
     const missingRecords = manifest.records.filter((r) => !currentById.has(r.id));
 
     // 1. Safety backup of everything this rollback touches, so the rollback can be rolled back

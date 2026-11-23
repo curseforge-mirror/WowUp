@@ -117,6 +117,13 @@ class FakeFs {
         }
         return [...this.dirs].filter((d) => d !== k && dirname(d) === k).map((d) => basename(d));
       },
+      readdir: async (p: string) => {
+        const k = normalize(p);
+        if (!this.dirs.has(k)) {
+          throw new Error(`ENOENT: ${k}`);
+        }
+        return [...this.dirs, ...this.files.keys()].filter((e) => e !== k && dirname(e) === k).map((e) => basename(e));
+      },
       listFiles: async (p: string) => {
         const k = normalize(p);
         if (!this.dirs.has(k)) {
@@ -436,6 +443,81 @@ describe("AgentBackupService", () => {
     expect(store.has("a-foo2")).toBeTrue();
     expect(fs.read(CORE)).toBe("core v9");
     expect(fs.exists(join(ADDONS, "Foo_Options"))).toBeFalse();
+  });
+
+  it("rollback leaves alone an addon that a rescan gave a new id", async () => {
+    const lib: any = {
+      id: "a-lib",
+      name: "LibShared",
+      installationId: "i1",
+      installedVersion: "1.0",
+      installedFolderList: ["LibShared"],
+    };
+    const fooWithLib = { ...foo, installedFolderList: ["Foo", "Foo_Options", "LibShared"] };
+    store.set("a-foo", { ...fooWithLib });
+    store.set("a-lib", { ...lib });
+    fs.put(join(ADDONS, "LibShared", "lib.lua"), "lib v1");
+    const m = await service.create("update_addons", inst, [lib]);
+
+    // the change updates LibShared; then a rescan replaces every record with one under a new id
+    fs.put(join(ADDONS, "LibShared", "lib.lua"), "lib v2");
+    store.clear();
+    store.set("r-foo", { ...fooWithLib, id: "r-foo" });
+    store.set("r-lib", { ...lib, id: "r-lib", installedVersion: "2.0" });
+    jasmine.clock().tick(1000);
+
+    const r = await service.rollback(m.id);
+
+    expect(fs.read(join(ADDONS, "LibShared", "lib.lua"))).toBe("lib v1");
+    expect(fs.read(CORE)).toBe("core v1");
+    expect(fs.read(join(ADDONS, "Foo_Options", "opt.lua"))).toBe("opt v1");
+    expect(store.get("r-foo")).toEqual({ ...fooWithLib, id: "r-foo" });
+    // the rescanned LibShared record is the same addon as the restored one
+    expect(store.has("r-lib")).toBeFalse();
+    expect(store.get("a-lib").installedVersion).toBe("1.0");
+    expect(r.removedFolders).toEqual([]);
+    expect(r.removedRecords).toBe(1);
+  });
+
+  it("rollback leaves alone a later addon that bundles a restored folder", async () => {
+    const lib: any = {
+      id: "a-lib",
+      name: "LibShared",
+      installationId: "i1",
+      installedVersion: "1.0",
+      installedFolderList: ["LibShared"],
+    };
+    store.set("a-lib", { ...lib });
+    fs.put(join(ADDONS, "LibShared", "lib.lua"), "lib v1");
+    const m = await service.create("update_addons", inst, [lib]);
+
+    fs.put(join(ADDONS, "LibShared", "lib.lua"), "lib v2");
+    store.set("a-lib", { ...lib, installedVersion: "2.0" });
+    // later the user installs Baz, which bundles LibShared; a record without an id claims it too
+    const baz: any = { id: "a-baz", name: "Baz", installationId: "i1", installedFolderList: ["Baz", "LibShared"] };
+    store.set("a-baz", { ...baz });
+    fs.put(join(ADDONS, "Baz", "baz.lua"), "baz");
+    const loose: any = { name: "Loose", installationId: "i1", installedFolderList: ["LibShared"] };
+    store.set("loose", { ...loose });
+    jasmine.clock().tick(1000);
+
+    const r = await service.rollback(m.id);
+
+    expect(fs.read(join(ADDONS, "LibShared", "lib.lua"))).toBe("lib v1");
+    expect(fs.read(join(ADDONS, "Baz", "baz.lua"))).toBe("baz");
+    expect(store.get("a-baz")).toEqual(baz);
+    expect(store.get("loose")).toEqual(loose);
+    expect(store.get("a-lib").installedVersion).toBe("1.0");
+    expect(r.removedRecords).toBe(0);
+    expect(r.removedFolders).toEqual([]);
+    expect(manifestOf(r.safetyBackupId).records.map((a: any) => a.id)).toEqual(["a-lib"]);
+
+    // and the rollback itself can be rolled back
+    jasmine.clock().tick(1000);
+    await expectAsync(service.rollback(r.safetyBackupId)).toBeResolved();
+    expect(fs.read(join(ADDONS, "LibShared", "lib.lua"))).toBe("lib v2");
+    expect(fs.read(join(ADDONS, "Baz", "baz.lua"))).toBe("baz");
+    expect(store.get("a-baz")).toEqual(baz);
   });
 
   it("rollback takes a safety backup first", async () => {
