@@ -15,7 +15,7 @@ import { ExportPayload, ImportSummary, InstallEvent } from "../../../services/ad
 import { needsUpdate } from "../../../utils/addon.utils";
 import { getLatestFile } from "../../../utils/search-result.utils";
 import { AgentToolContext, AgentToolSet } from "../agent-tool";
-import { resolveAddon, resolveInstallation } from "../resolve";
+import { InstallationNameDeps, resolveAddon, resolveInstallationFor } from "../resolve";
 import { canonicalProvider } from "./discovery.tools";
 import { ReleaseFolderDeps, releaseFolders } from "./release-download";
 import { CurseVersionClient, listVersions, toSearchResultFile } from "./versions";
@@ -100,7 +100,7 @@ export interface ChangeDeps extends Omit<ReleaseFolderDeps, "getProvider"> {
     ): Promise<{ id: string }>;
     recordAdded(id: string, added: Addon[]): Promise<void>;
   };
-  installService: { getWowInstallationsAsync(): Promise<WowInstallation[]> };
+  installService: InstallationNameDeps["installService"];
   /** The installation WowUp currently shows (SessionService) */
   getSelected: () => WowInstallation | undefined;
   getProvider: (name: string) => ChangeProvider | undefined;
@@ -222,7 +222,7 @@ function ver(version: string | undefined): string {
 }
 
 function nameOf(installation: WowInstallation): string {
-  return installation.label || installation.displayName;
+  return installation.displayName;
 }
 
 function isProvider(a: Addon, provider: string, externalId: string): boolean {
@@ -238,7 +238,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
   const { addonService, backupService, brokerService } = deps;
 
   const resolveInstall = async (args: Record<string, unknown>): Promise<WowInstallation> =>
-    resolveInstallation(args.installation, await deps.installService.getWowInstallationsAsync(), deps.getSelected());
+    resolveInstallationFor(deps, args.installation);
 
   const recordsOf = async (installation: WowInstallation): Promise<Addon[]> =>
     (await addonService.getAllAddons(installation)) ?? [];

@@ -39,7 +39,10 @@ describe("discovery tools", () => {
     ]);
     const deps = {
       addonService,
-      installService: { getWowInstallationsAsync: async () => [install("i1")] },
+      installService: {
+        getWowInstallationsAsync: async () => [install("i1")],
+        getInstallationDisplayName: async (i: any) => i.displayName,
+      },
       getSelected: () => undefined,
       getProvider: () => undefined,
       getSecret: async () => undefined,
@@ -67,6 +70,21 @@ describe("discovery tools", () => {
     );
   });
 
+  it("list_installations shows the resolved name for a {defaultName} label", async () => {
+    const raw = { ...install("i1"), label: "{defaultName}", displayName: "{defaultName}" };
+    const { addonService, tools } = make({
+      installService: {
+        getWowInstallationsAsync: async () => [raw],
+        getInstallationDisplayName: async () => "World of Warcraft: Forever",
+      },
+    });
+    addonService.getAddons.and.resolveTo([]);
+    const res: any = await tools.list_installations({}, ctx);
+    expect(res[0].name).toBe("World of Warcraft: Forever");
+    const byName: any = await tools.list_addons({ installation: "World of Warcraft: Forever" }, ctx);
+    expect(byName).toEqual([]);
+  });
+
   it("list_addons filters by hasUpdate", async () => {
     const { addonService, tools } = make();
     addonService.getAddons.and.resolveTo([
@@ -82,7 +100,12 @@ describe("discovery tools", () => {
 
   it("search_addons passes the resolved installation", async () => {
     const installs = [install("i1"), install("i2", WowClientType.Classic)];
-    const { addonService, tools } = make({ installService: { getWowInstallationsAsync: async () => installs } });
+    const { addonService, tools } = make({
+      installService: {
+        getWowInstallationsAsync: async () => installs,
+        getInstallationDisplayName: async (i: any) => i.displayName,
+      },
+    });
     addonService.search.and.resolveTo([
       {
         name: "Found",

@@ -1,7 +1,41 @@
 import { Addon, getEnumName, WowClientType, WowInstallation } from "wowup-lib-core";
 
+/** What the tools need to show installation names the way the UI does ("{defaultName}" labels become real names) */
+export interface InstallationNameDeps {
+  installService: {
+    getWowInstallationsAsync(): Promise<WowInstallation[]>;
+    getInstallationDisplayName(installation: WowInstallation): Promise<string>;
+  };
+  getSelected: () => WowInstallation | undefined;
+}
+
+/** Set `displayName` to the name the UI shows, since a stored label can be the raw "{defaultName}" template */
+export async function nameInstallations(
+  installService: InstallationNameDeps["installService"],
+  installs: WowInstallation[],
+): Promise<WowInstallation[]> {
+  for (const i of installs) {
+    i.displayName = await installService.getInstallationDisplayName(i);
+  }
+  return installs;
+}
+
+/** All installations, named for display */
+export async function loadInstallations(deps: InstallationNameDeps): Promise<WowInstallation[]> {
+  return nameInstallations(deps.installService, await deps.installService.getWowInstallationsAsync());
+}
+
+export async function resolveInstallationFor(deps: InstallationNameDeps, arg: unknown): Promise<WowInstallation> {
+  const installs = await loadInstallations(deps);
+  const selected = deps.getSelected();
+  if (selected) {
+    await nameInstallations(deps.installService, [selected]);
+  }
+  return resolveInstallation(arg, installs, selected);
+}
+
 function describe(i: WowInstallation): string {
-  return `${i.id} (${i.label || i.displayName}, ${getEnumName(WowClientType, i.clientType)})`;
+  return `${i.id} (${i.displayName || i.label}, ${getEnumName(WowClientType, i.clientType)})`;
 }
 
 function list(items: WowInstallation[]): string {
@@ -35,7 +69,7 @@ export function resolveInstallation(
   }
 
   const byName = installs.filter(
-    (i) => (i.label ?? "").toLowerCase() === lower || (i.displayName ?? "").toLowerCase() === lower,
+    (i) => (i.displayName ?? "").toLowerCase() === lower || (i.label ?? "").toLowerCase() === lower,
   );
   if (byName.length === 1) {
     return byName[0];

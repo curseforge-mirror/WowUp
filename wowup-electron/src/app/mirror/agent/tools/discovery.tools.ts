@@ -23,7 +23,7 @@ import {
 } from "../../../../common/constants";
 import { needsUpdate } from "../../../utils/addon.utils";
 import { AgentToolSet } from "../agent-tool";
-import { resolveAddon, resolveInstallation } from "../resolve";
+import { InstallationNameDeps, loadInstallations, resolveAddon, resolveInstallationFor } from "../resolve";
 import { CurseVersionClient, listVersions } from "./versions";
 
 /** The slice of a provider these tools call. */
@@ -47,7 +47,7 @@ export interface DiscoveryDeps {
     getCategoryPage(category: AddonCategory, installation: WowInstallation): Promise<AddonSearchResult[]>;
     getFeaturedAddons(installation: WowInstallation): Observable<AddonSearchResult[]>;
   };
-  installService: { getWowInstallationsAsync(): Promise<WowInstallation[]> };
+  installService: InstallationNameDeps["installService"];
   /** The installation WowUp currently shows (SessionService). */
   getSelected: () => WowInstallation | undefined;
   getProvider: (name: string) => DiscoveryProvider | undefined;
@@ -163,7 +163,7 @@ export function createDiscoveryTools(deps: DiscoveryDeps): AgentToolSet {
   const { addonService } = deps;
 
   const resolveInstall = async (args: Record<string, unknown>): Promise<WowInstallation> =>
-    resolveInstallation(args.installation, await deps.installService.getWowInstallationsAsync(), deps.getSelected());
+    resolveInstallationFor(deps, args.installation);
 
   const providerOf = (name: string): DiscoveryProvider => {
     const provider = deps.getProvider(canonicalProvider(name));
@@ -193,12 +193,12 @@ export function createDiscoveryTools(deps: DiscoveryDeps): AgentToolSet {
 
   return {
     list_installations: async () => {
-      const installs = await deps.installService.getWowInstallationsAsync();
+      const installs = await loadInstallations(deps);
       const selected = deps.getSelected();
       return Promise.all(
         installs.map(async (i) => ({
           id: i.id,
-          name: i.label || i.displayName,
+          name: i.displayName,
           clientType: getEnumName(WowClientType, i.clientType),
           path: i.location,
           addonCount: ((await addonService.getAddons(i)) ?? []).length,

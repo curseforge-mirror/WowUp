@@ -61,6 +61,7 @@ describe("change tools", () => {
 
   const make = (
     opts: {
+      install?: any;
       records?: any[];
       disk?: string[];
       result?: any;
@@ -205,7 +206,11 @@ describe("change tools", () => {
       addonService,
       brokerService,
       backupService,
-      installService: { getWowInstallationsAsync: async () => [INSTALL] },
+      installService: {
+        getWowInstallationsAsync: async () => [opts.install ?? INSTALL],
+        getInstallationDisplayName: async (i: any) =>
+          i.label === "{defaultName}" ? "World of Warcraft: Forever" : i.displayName,
+      },
       getSelected: () => undefined,
       getProvider: () => provider,
       listAddonFolders: async () => opts.disk ?? [],
@@ -255,6 +260,16 @@ describe("change tools", () => {
         "update_addons",
       ].sort(),
     );
+  });
+
+  it("preview names a {defaultName} installation by its resolved name", async () => {
+    const m = make({
+      records: [],
+      install: { ...INSTALL, label: "{defaultName}", displayName: "{defaultName}" },
+      results: { "1": alphaRelease() },
+    });
+    const preview: any = await m.tools.install_addon({ provider: "curse", externalId: "12345", preview: true }, m.ctx);
+    expect(preview.installation).toBe("World of Warcraft: Forever");
   });
 
   it("preview changes nothing", async () => {

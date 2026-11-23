@@ -76,7 +76,10 @@ describe("inspect tools", () => {
         getAddons: async () => [addon],
         getInstallBasePath: () => "C:\\wow\\AddOns",
       },
-      installService: { getWowInstallationsAsync: async () => [{ id: "i1", label: "i1", displayName: "i1" }] },
+      installService: {
+        getWowInstallationsAsync: async () => [{ id: "i1", label: "i1", displayName: "i1" }],
+        getInstallationDisplayName: async (i: any) => i.displayName,
+      },
       getSelected: () => undefined,
       getProvider: () => ({
         getById: async () => ({ files: [] }),

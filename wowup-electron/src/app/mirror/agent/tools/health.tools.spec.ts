@@ -39,7 +39,10 @@ describe("health tools", () => {
           .createSpy("mm")
           .and.resolveTo([{ addon, installation: { gameVersion: "x" } }]),
       },
-      installService: { getWowInstallationsAsync: async () => installs },
+      installService: {
+        getWowInstallationsAsync: async () => installs,
+        getInstallationDisplayName: async (i: any) => i.displayName,
+      },
       getSelected: () => undefined,
       wtfService: { getWtfPath: () => WTF },
       fileService: {

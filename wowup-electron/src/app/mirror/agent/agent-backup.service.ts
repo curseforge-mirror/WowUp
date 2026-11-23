@@ -370,7 +370,9 @@ export class AgentBackupService {
         throw new Error(`${addon.name} has no id, so its record can't be backed up.`);
       }
       if (addon.installationId !== installation.id) {
-        throw new Error(`${addon.name} belongs to another installation than ${installation.label || installation.id}.`);
+        throw new Error(
+          `${addon.name} belongs to another installation than ${installation.displayName || installation.id}.`,
+        );
       }
       byId.set(addon.id, JSON.parse(JSON.stringify(addon)) as Addon);
     }
@@ -424,7 +426,7 @@ export class AgentBackupService {
         tool: o.tool,
         createdAt: now.toISOString(),
         installationId: o.installation.id,
-        installationName: o.installation.label || o.installation.displayName,
+        installationName: await this._installationService.getInstallationDisplayName(o.installation),
         records: o.records,
         folders: copied,
         savedVariables,

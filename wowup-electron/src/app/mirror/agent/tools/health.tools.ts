@@ -3,7 +3,7 @@ import { Addon, WowInstallation } from "wowup-lib-core";
 
 import { AgentToolSet } from "../agent-tool";
 import { parseLuaAssignments } from "../lua-literal";
-import { resolveInstallation } from "../resolve";
+import { InstallationNameDeps, loadInstallations, resolveInstallationFor } from "../resolve";
 
 const BUGGRABBER_FILE = "!BugGrabber.lua";
 const DEFAULT_LIMIT = 20;
@@ -16,7 +16,7 @@ export interface HealthDeps {
     getAllAddonsAvailableForUpdate(installation?: WowInstallation): Promise<Addon[]>;
     findGameVersionMismatches(addons: Addon[]): Promise<{ addon: Addon; installation: WowInstallation }[]>;
   };
-  installService: { getWowInstallationsAsync(): Promise<WowInstallation[]> };
+  installService: InstallationNameDeps["installService"];
   getSelected: () => WowInstallation | undefined;
   wtfService: { getWtfPath(installation: WowInstallation): string };
   fileService: {
@@ -59,7 +59,7 @@ export function createHealthTools(deps: HealthDeps): AgentToolSet {
     const addons = (await addonService.getAllAddonsAvailableForUpdate(installation)) ?? [];
     const mismatches = (await addonService.findGameVersionMismatches(addons)) ?? [];
     return {
-      installation: installation.label || installation.displayName,
+      installation: installation.displayName,
       installationId: installation.id,
       updates: addons.map((a) => ({
         addonId: a.id,
@@ -103,18 +103,18 @@ export function createHealthTools(deps: HealthDeps): AgentToolSet {
 
   return {
     check_updates: async (args, ctx) => {
-      const installs = await deps.installService.getWowInstallationsAsync();
+      const installs = await loadInstallations(deps);
       const all = args.all === true;
       let targets: WowInstallation[];
       if (all) {
         await addonService.syncAllClients();
         targets = installs;
       } else {
-        targets = [resolveInstallation(args.installation, installs, deps.getSelected())];
+        targets = [await resolveInstallationFor(deps, args.installation)];
       }
       const results: Record<string, unknown>[] = [];
       for (const installation of targets) {
-        ctx.progress(`Checking ${installation.label || installation.displayName}`);
+        ctx.progress(`Checking ${installation.displayName}`);
         if (!all) {
           await addonService.syncClient(installation);
         }
@@ -124,8 +124,7 @@ export function createHealthTools(deps: HealthDeps): AgentToolSet {
     },
 
     get_addon_errors: async (args) => {
-      const installs = await deps.installService.getWowInstallationsAsync();
-      const installation = resolveInstallation(args.installation, installs, deps.getSelected());
+      const installation = await resolveInstallationFor(deps, args.installation);
       const limit =
         typeof args.limit === "number" && Number.isFinite(args.limit) && args.limit > 0
           ? Math.floor(args.limit)

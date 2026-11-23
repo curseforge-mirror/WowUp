@@ -245,7 +245,14 @@ describe("AgentBackupService", () => {
           provide: WarcraftService,
           useValue: { getAddonFolderPath: (i: any) => join(dirname(i.location), "Interface", "AddOns") },
         },
-        { provide: WarcraftInstallationService, useValue: { getWowInstallationsAsync: async () => [inst] } },
+        {
+          provide: WarcraftInstallationService,
+          useValue: {
+            getWowInstallationsAsync: async () => [inst],
+            getInstallationDisplayName: async (i: any) =>
+              i.label === "{defaultName}" ? "World of Warcraft: Forever" : i.label,
+          },
+        },
         { provide: WtfService, useValue: { getWtfPath: (i: any) => join(dirname(i.location), "WTF") } },
         { provide: ElectronService, useValue: electron },
         { provide: WowUpService, useValue: { applicationFolderPath: DATA } },
@@ -894,6 +901,13 @@ describe("AgentBackupService", () => {
     expect("summary" in list[1]).toBeFalse();
     expect(list[1].createdAt).toBe(new Date(2026, 10, 23, 10, 15, 0).toISOString());
     expect(list[1].savedVariablesPending).toBeUndefined();
+  });
+
+  it("list shows the resolved name for a {defaultName} installation", async () => {
+    const raw = { ...inst, label: "{defaultName}", displayName: "{defaultName}" };
+    await service.create("update_addons", raw, [foo]);
+    const list = await service.list();
+    expect(list[0].installation).toBe("World of Warcraft: Forever");
   });
 
   it("refuses backup ids and folder names that leave their folder", async () => {
