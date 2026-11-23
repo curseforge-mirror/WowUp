@@ -9,10 +9,10 @@ describe("wow process", () => {
     expect(await isWowRunning("C:\\Games\\WoWClassic.exe", list)).to.equal(false);
   });
 
-  it("isWowRunning returns false when the process list fails", async () => {
+  it("isWowRunning assumes WoW is running when the process list fails", async () => {
     const list = async () => {
       throw new Error("boom");
     };
-    expect(await isWowRunning("Wow.exe", list)).to.equal(false);
+    expect(await isWowRunning("Wow.exe", list)).to.equal(true);
   });
 });

@@ -38,7 +38,7 @@ export async function isWowRunning(
     const names = await lister();
     return names.some((n) => n.toLowerCase() === wanted);
   } catch (e) {
-    log.warn("[agent] could not list processes", e);
-    return false;
+    log.warn("[agent] could not list processes; assuming WoW is running, SavedVariables will wait", e);
+    return true;
   }
 }
