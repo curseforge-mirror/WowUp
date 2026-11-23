@@ -19,6 +19,7 @@ import { AddonProviderFactory } from "../../services/addons/addon.provider.facto
 import { AddonService } from "../../services/addons/addon.service";
 import { ElectronService } from "../../services/electron/electron.service";
 import { FileService } from "../../services/files/file.service";
+import { DownloadService } from "../../services/download/download.service";
 import { SessionService } from "../../services/session/session.service";
 import { PreferenceStorageService } from "../../services/storage/preference-storage.service";
 import { SensitiveStorageService } from "../../services/storage/sensitive-storage.service";
@@ -33,6 +34,7 @@ import {
 } from "./agent-settings";
 import { AgentToolHandler, AgentToolSet } from "./agent-tool";
 import { createDiscoveryTools, DiscoveryProvider } from "./tools/discovery.tools";
+import { createInspectTools, InspectProvider } from "./tools/inspect.tools";
 
 @Injectable({
   providedIn: "root",
@@ -54,6 +56,7 @@ export class AgentBridgeService {
     private _addonProviderFactory: AddonProviderFactory,
     private _warcraftInstallationService: WarcraftInstallationService,
     private _sessionService: SessionService,
+    private _downloadService: DownloadService,
   ) {}
 
   public registerTools(tools: AgentToolSet): void {
@@ -67,6 +70,19 @@ export class AgentBridgeService {
         installService: this._warcraftInstallationService,
         getSelected: () => this._sessionService.getSelectedWowInstallation(),
         getProvider: (name) => this._addonProviderFactory.getProvider<DiscoveryProvider>(name),
+        getSecret: (key) => this._sensitiveStorage.getAsync(key),
+      }),
+    );
+
+    this.registerTools(
+      createInspectTools({
+        applicationFolderPath: this._wowUpService.applicationFolderPath,
+        fileService: this._fileService,
+        downloadService: this._downloadService,
+        addonService: this._addonService,
+        installService: this._warcraftInstallationService,
+        getSelected: () => this._sessionService.getSelectedWowInstallation(),
+        getProvider: (name) => this._addonProviderFactory.getProvider<InspectProvider>(name),
         getSecret: (key) => this._sensitiveStorage.getAsync(key),
       }),
     );

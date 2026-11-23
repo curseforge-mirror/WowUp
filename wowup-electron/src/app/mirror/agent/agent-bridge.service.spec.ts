@@ -9,6 +9,7 @@ import {
 } from "../../../common/mirror/agent-contract";
 import { ElectronService } from "../../services/electron/electron.service";
 import { FileService } from "../../services/files/file.service";
+import { DownloadService } from "../../services/download/download.service";
 import { PreferenceStorageService } from "../../services/storage/preference-storage.service";
 import { SensitiveStorageService } from "../../services/storage/sensitive-storage.service";
 import { WowUpService } from "../../services/wowup/wowup.service";
@@ -63,6 +64,7 @@ describe("AgentBridgeService", () => {
         { provide: AddonProviderFactory, useValue: {} },
         { provide: WarcraftInstallationService, useValue: {} },
         { provide: SessionService, useValue: {} },
+        { provide: DownloadService, useValue: {} },
       ],
     });
     service = TestBed.inject(AgentBridgeService);

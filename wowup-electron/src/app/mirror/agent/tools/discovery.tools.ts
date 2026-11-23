@@ -69,7 +69,7 @@ const KNOWN_PROVIDERS = [
 ];
 
 /** Case-insensitive provider name to the app's exact name ("curseforge" is accepted for Curse). */
-function canonicalProvider(name: string): string {
+export function canonicalProvider(name: string): string {
   const lower = name.trim().toLowerCase();
   if (lower === "curseforge") {
     return ADDON_PROVIDER_CURSEFORGE;
