@@ -18,11 +18,13 @@ class FakeFs {
   public readonly files = new Map<string, string>();
   public readonly dirs = new Set<string>();
   public readonly ops: string[] = [];
+  public readonly mtimes = new Map<string, number>();
 
   public mkdirp(p: string): void {
     let d = normalize(p);
     while (!this.dirs.has(d)) {
       this.dirs.add(d);
+      this.mtimes.set(d, Date.now());
       const up = dirname(d);
       if (up === d) {
         break;
@@ -138,6 +140,16 @@ class FakeFs {
         }
         return c;
       },
+      statFiles: async (paths: string[]) => {
+        const out: Record<string, any> = {};
+        for (const p of paths) {
+          if (!this.exists(p)) {
+            throw new Error(`ENOENT: ${p}`);
+          }
+          out[p] = { mtimeMs: this.mtimes.get(normalize(p)) ?? 0 };
+        }
+        return out;
+      },
     };
   }
 }
@@ -242,10 +254,12 @@ describe("AgentBackupService", () => {
 
   it("create copies folders, records and matching SavedVariables", async () => {
     const before = new Map(fs.files);
-    const m = await service.create("install_addon", inst, [foo], ["NewThing"]);
+    const m = await service.create("install_addon", inst, [foo], ["NewThing"], "install_addon Curse 12345 (Foo) v1.0");
 
     expect(m.id).toBe("20261123-101500-install_addon");
     expect(m.tool).toBe("install_addon");
+    expect(m.summary).toBe("install_addon Curse 12345 (Foo) v1.0");
+    expect(m.undo).toBe("rollback 20261123-101500-install_addon");
     expect(m.createdAt).toBe(new Date(2026, 10, 23, 10, 15, 0).toISOString());
     expect(m.installationId).toBe("i1");
     expect(m.records).toEqual([foo]);
@@ -285,6 +299,8 @@ describe("AgentBackupService", () => {
     // two changes in one second get distinct ids
     const m2 = await service.create("install_addon", inst, [foo]);
     expect(m2.id).toBe("20261123-101500-install_addon-2");
+    expect(m2.undo).toBe("rollback 20261123-101500-install_addon-2");
+    expect(m2.summary).toBeUndefined();
 
     // no WTF folder means no SavedVariables, not an error
     await fs.api().remove(WTF);
@@ -355,6 +371,71 @@ describe("AgentBackupService", () => {
     expect(r.restoredRecords).toBe(0);
     expect(r.savedVariables).toBe("none");
     expect(session.notifyAddonsChanged).toHaveBeenCalled();
+  });
+
+  it("rollback removes folders a later update added to a restored addon", async () => {
+    const lib: any = { id: "a-lib", name: "LibShared", installationId: "i1", installedFolderList: ["LibShared"] };
+    store.set("a-lib", { ...lib });
+    fs.put(join(ADDONS, "LibShared", "lib.lua"), "lib");
+    const m = await service.create("update_addons", inst, [foo]);
+
+    // later, an update gives Foo a new folder and a folder another addon also claims
+    store.set("a-foo", {
+      ...foo,
+      installedVersion: "2.0",
+      installedFolderList: ["Foo", "Foo_Options", "Foo_New", "LibShared"],
+    });
+    fs.put(join(ADDONS, "Foo_New", "new.lua"), "new module");
+    jasmine.clock().tick(1000);
+
+    const r = await service.rollback(m.id);
+
+    expect(fs.exists(join(ADDONS, "Foo_New"))).toBeFalse();
+    expect(r.removedFolders).toEqual(["Foo_New"]);
+    expect(fs.read(join(BACKUPS, r.safetyBackupId, "addons", "Foo_New", "new.lua"))).toBe("new module");
+    expect(store.get("a-foo").installedFolderList).toEqual(["Foo", "Foo_Options"]);
+    // still claimed by an addon the rollback doesn't touch
+    expect(fs.read(join(ADDONS, "LibShared", "lib.lua"))).toBe("lib");
+    expect(store.has("a-lib")).toBeTrue();
+    expect(r.removedRecords).toBe(0);
+  });
+
+  it("rollback removes a later reinstall that claims the restored folders", async () => {
+    const m = await service.create("remove_addon", inst, [foo]);
+
+    // the change removes Foo; later the user reinstalls it from another provider under a new record
+    await fs.api().remove(join(ADDONS, "Foo"));
+    await fs.api().remove(join(ADDONS, "Foo_Options"));
+    store.delete("a-foo");
+    const foo2: any = { id: "a-foo2", name: "Foo", installationId: "i1", installedFolderList: ["Foo", "Foo_Extra"] };
+    store.set("a-foo2", { ...foo2 });
+    fs.put(CORE, "core v9");
+    fs.put(join(ADDONS, "Foo_Extra", "x.lua"), "extra");
+    jasmine.clock().tick(1000);
+
+    const r = await service.rollback(m.id);
+
+    expect(store.has("a-foo2")).toBeFalse();
+    expect(store.get("a-foo").installedVersion).toBe("1.0");
+    expect([...store.values()].filter((a) => a.installedFolderList.includes("Foo")).length).toBe(1);
+    expect(fs.read(CORE)).toBe("core v1");
+    expect(fs.read(join(ADDONS, "Foo_Options", "opt.lua"))).toBe("opt v1");
+    expect(fs.exists(join(ADDONS, "Foo_Extra"))).toBeFalse();
+    expect(r.removedRecords).toBe(1);
+    expect(r.restoredRecords).toBe(1);
+    expect(r.removedFolders).toEqual(["Foo_Extra"]);
+
+    // the safety backup holds the reinstall, so this rollback can be undone too
+    const safety = manifestOf(r.safetyBackupId);
+    expect(safety.records.map((a: any) => a.id)).toEqual(["a-foo2"]);
+    expect(safety.added.addonIds).toEqual(["a-foo"]);
+    expect(fs.read(join(BACKUPS, r.safetyBackupId, "addons", "Foo_Extra", "x.lua"))).toBe("extra");
+    jasmine.clock().tick(1000);
+    await service.rollback(r.safetyBackupId);
+    expect(store.has("a-foo")).toBeFalse();
+    expect(store.has("a-foo2")).toBeTrue();
+    expect(fs.read(CORE)).toBe("core v9");
+    expect(fs.exists(join(ADDONS, "Foo_Options"))).toBeFalse();
   });
 
   it("rollback takes a safety backup first", async () => {
@@ -472,16 +553,21 @@ describe("AgentBackupService", () => {
     for (let i = 0; i < 10; i++) {
       seed(`old-${i}`, 40 + i);
     }
-    fs.put(join(BACKUPS, "incomplete", "addons", "Foo", "a.lua"), "x");
+    // folders without a manifest (a crash mid-create) go once they are over a day old
+    fs.put(join(BACKUPS, "incomplete-old", "addons", "Foo", "a.lua"), "x");
+    fs.mtimes.set(join(BACKUPS, "incomplete-old"), now.getTime() - 2 * DAY);
+    fs.put(join(BACKUPS, "incomplete-new", "addons", "Foo", "a.lua"), "x");
+    fs.mtimes.set(join(BACKUPS, "incomplete-new"), now.getTime() - 2 * 60 * 60 * 1000);
 
-    expect(await service.prune(now)).toBe(10);
+    expect(await service.prune(now)).toBe(11);
     for (let i = 0; i < 52; i++) {
       expect(fs.exists(join(BACKUPS, `young-${i}`))).toBeTrue();
     }
     for (let i = 0; i < 10; i++) {
       expect(fs.exists(join(BACKUPS, `old-${i}`))).toBeFalse();
     }
-    expect(fs.exists(join(BACKUPS, "incomplete"))).toBeTrue();
+    expect(fs.exists(join(BACKUPS, "incomplete-old"))).toBeFalse();
+    expect(fs.exists(join(BACKUPS, "incomplete-new"))).toBeTrue();
 
     // 5 young and 55 old: the newest 50 keep 45 old ones
     await fs.api().remove(BACKUPS);
@@ -507,7 +593,7 @@ describe("AgentBackupService", () => {
 
     const a = await service.create("update_addons", inst, [foo]);
     jasmine.clock().tick(1000);
-    const b = await service.create("install_addon", inst, [], ["Bar"]);
+    const b = await service.create("install_addon", inst, [], ["Bar"], "install_addon Curse 99 (Bar) v2");
     await service.recordAdded(b.id, [
       { id: "a-bar", name: "Bar", installationId: "i1", installedFolderList: ["Bar"] } as any,
     ]);
@@ -521,9 +607,11 @@ describe("AgentBackupService", () => {
         installationId: "i1",
         installation: "Retail",
         addons: ["Bar"],
+        summary: "install_addon Curse 99 (Bar) v2",
       }),
     );
     expect(list[1].addons).toEqual(["Foo"]);
+    expect("summary" in list[1]).toBeFalse();
     expect(list[1].createdAt).toBe(new Date(2026, 10, 23, 10, 15, 0).toISOString());
     expect(list[1].savedVariablesPending).toBeUndefined();
   });

@@ -22,6 +22,8 @@ const SAVED_VARIABLES_DIR = "SavedVariables";
 const KEEP_NEWEST = 50;
 const KEEP_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** A backup folder without a manifest (a crash mid-create) is deleted once its folder is this old */
+const INCOMPLETE_MAX_AGE_MS = DAY_MS;
 /** Keeps rollback-of-rollback folder names from growing without bound */
 const MAX_TOOL_SLUG = 60;
 /** A backup id is a single folder name inside the backups folder */
@@ -46,6 +48,12 @@ export interface BackupManifest {
   /** Folders and records were rolled back, SavedVariables wait for WoW to close */
   savedVariablesPending?: boolean;
   installationName?: string;
+  /** What the change was, e.g. "install_addon Curse 12345 (DBM) v1.2" */
+  summary?: string;
+  /** How to undo it: `rollback <id>` */
+  undo: string;
+  /** Ids of the installation's addon records when the backup was taken; later ones are told apart by this */
+  recordIdsAtBackup?: string[];
   /** The safety backup taken by the rollback that left SavedVariables pending */
   safetyBackupId?: string;
 }
@@ -63,6 +71,7 @@ export type BackupSummary = Pick<BackupManifest, "id" | "tool" | "createdAt" | "
   installation: string;
   addons: string[];
   savedVariablesPending?: boolean;
+  summary?: string;
 };
 
 interface SnapshotOptions {
@@ -75,6 +84,7 @@ interface SnapshotOptions {
   savedVariables?: string[];
   addedIds?: string[];
   addedNames?: string[];
+  summary?: string;
 }
 
 function message(e: unknown): string {
@@ -114,8 +124,12 @@ function unique(values: string[]): string[] {
   return [...new Set(values)];
 }
 
+function isFolderName(name: unknown): name is string {
+  return typeof name === "string" && name.trim() !== "" && name !== "." && name !== ".." && !/[\\/:\0]/.test(name);
+}
+
 function assertFolderName(name: unknown): string {
-  if (typeof name !== "string" || name.trim() === "" || name === "." || name === ".." || /[\\/:\0]/.test(name)) {
+  if (!isFolderName(name)) {
     throw new Error(`Not an addon folder name: ${JSON.stringify(name)}`);
   }
   return name;
@@ -200,6 +214,7 @@ export class AgentBackupService {
     installation: WowInstallation,
     addons: Addon[],
     extraFolders: string[] = [],
+    summary?: string,
   ): Promise<BackupManifest> {
     return this.exclusive(async () => {
       if (typeof tool !== "string" || tool.trim() === "") {
@@ -209,7 +224,7 @@ export class AgentBackupService {
       const folders = uniqueFolders(
         [...records.flatMap((a) => a.installedFolderList ?? []), ...extraFolders].map((f) => assertFolderName(f)),
       );
-      return await this.snapshot({ tool, installation, records, folders });
+      return await this.snapshot({ tool, installation, records, folders, summary });
     });
   }
 
@@ -249,6 +264,9 @@ export class AgentBackupService {
         installation: m.installationName || m.installationId,
         addons: unique([...m.records.map((r) => r.name), ...(m.added.names ?? [])].filter((n) => !!n)),
       };
+      if (m.summary) {
+        summary.summary = m.summary;
+      }
       if (m.savedVariablesPending) {
         summary.savedVariablesPending = true;
       }
@@ -289,8 +307,32 @@ export class AgentBackupService {
           console.error(`[agent-backup] could not prune ${manifest.id}`, e);
         }
       }
-      return removed;
+      return removed + (await this.pruneIncomplete(now));
     });
+  }
+
+  /** Folders with no manifest.json at all, by the folder's modified time; an unreadable manifest is left alone */
+  private async pruneIncomplete(now: Date): Promise<number> {
+    if (!(await this._fileService.pathExists(this.root))) {
+      return 0;
+    }
+    let removed = 0;
+    for (const name of await this._fileService.listDirectories(this.root)) {
+      const dir = join(this.root, name);
+      try {
+        if (await this._fileService.pathExists(join(dir, MANIFEST_FILE))) {
+          continue;
+        }
+        const modified = (await this._fileService.statFiles([dir]))[dir]?.mtimeMs;
+        if (typeof modified === "number" && now.getTime() - modified > INCOMPLETE_MAX_AGE_MS) {
+          await this._fileService.remove(dir);
+          removed += 1;
+        }
+      } catch (e) {
+        console.error(`[agent-backup] could not prune incomplete backup ${name}`, e);
+      }
+    }
+    return removed;
   }
 
   private get root(): string {
@@ -354,6 +396,10 @@ export class AgentBackupService {
         savedVariables.push(rel);
       }
 
+      const recordIdsAtBackup = (await this._addonStorage.getAllForInstallationIdAsync(o.installation.id))
+        .map((a) => a.id)
+        .filter((addonId) => !!addonId);
+
       const manifest: BackupManifest = {
         id,
         tool: o.tool,
@@ -364,7 +410,12 @@ export class AgentBackupService {
         folders: copied,
         savedVariables,
         added: { addonIds: o.addedIds ?? [], folders: absent },
+        undo: `rollback ${id}`,
+        recordIdsAtBackup,
       };
+      if (o.summary) {
+        manifest.summary = o.summary;
+      }
       if (o.addedNames && o.addedNames.length > 0) {
         manifest.added.names = o.addedNames;
       }
@@ -518,19 +569,38 @@ export class AgentBackupService {
     const currentById = new Map(current.filter((a) => !!a.id).map((a) => [a.id, a]));
 
     const restoreIds = new Set(manifest.records.map((r) => r.id));
-    const removeIds = unique(manifest.added.addonIds).filter((addonId) => !restoreIds.has(addonId));
+    const addedIds = new Set(manifest.added.addonIds);
+    const knownIds = new Set(manifest.recordIdsAtBackup ?? current.map((a) => a.id));
     const restoreKeys = new Set(manifest.folders.map(folderKey));
-    const removeFolders = uniqueFolders(manifest.added.folders).filter((f) => !restoreKeys.has(folderKey(f)));
+    const affectedKeys = new Set([...restoreKeys, ...manifest.added.folders.map(folderKey)]);
+    const foldersOf = (a: Addon) => (a.installedFolderList ?? []).filter(isFolderName);
+
+    // Records to remove: what the change added, and records made after the backup that claim a folder this
+    // rollback restores or removes (a reinstall under a new id would otherwise leave two records on one folder)
+    const removeRecords = current.filter(
+      (a) =>
+        !restoreIds.has(a.id) &&
+        (addedIds.has(a.id) || (!knownIds.has(a.id) && foldersOf(a).some((f) => affectedKeys.has(folderKey(f))))),
+    );
+    const touched = [...current.filter((a) => restoreIds.has(a.id)), ...removeRecords];
+    const touchedIds = new Set(touched.map((a) => a.id));
+    const keptKeys = new Set(current.filter((a) => !touchedIds.has(a.id)).flatMap((a) => foldersOf(a).map(folderKey)));
+    // Folders to remove: what the change added and what the touched records claim now (a later update may have
+    // added folders), except folders being restored and folders an addon this rollback doesn't touch still claims
+    const removeFolders = uniqueFolders([...manifest.added.folders, ...touched.flatMap(foldersOf)]).filter(
+      (f) => !restoreKeys.has(folderKey(f)) && !keptKeys.has(folderKey(f)),
+    );
     const missingRecords = manifest.records.filter((r) => !currentById.has(r.id));
 
     // 1. Safety backup of everything this rollback touches, so the rollback can be rolled back
     const safety = await this.snapshot({
       tool: `rollback-${manifest.id}`,
       installation,
-      records: current.filter((a) => restoreIds.has(a.id) || removeIds.includes(a.id)),
+      records: touched,
       folders: [...manifest.folders, ...removeFolders],
       addedIds: missingRecords.map((r) => r.id),
       addedNames: missingRecords.map((r) => r.name),
+      summary: `State before rolling back ${manifest.id}`,
     });
 
     const restoredFolders: string[] = [];
@@ -539,12 +609,9 @@ export class AgentBackupService {
     let removedRecords = 0;
     try {
       // 2. Remove what the change added
-      for (const addonId of removeIds) {
-        const addon = currentById.get(addonId);
-        if (addon) {
-          await this._addonStorage.removeAsync(addon);
-          removedRecords += 1;
-        }
+      for (const addon of removeRecords) {
+        await this._addonStorage.removeAsync(addon);
+        removedRecords += 1;
       }
       for (const folder of removeFolders) {
         const live = join(addonsPath, folder);
@@ -618,6 +685,7 @@ export class AgentBackupService {
       records: [],
       folders: [],
       savedVariables: manifest.savedVariables,
+      summary: `SavedVariables before finishing the rollback of ${manifest.id}`,
     });
     result.safetyBackupId = safety.id;
     result.savedVariables = await this.restoreSavedVariables(manifest, installation, safety.id);

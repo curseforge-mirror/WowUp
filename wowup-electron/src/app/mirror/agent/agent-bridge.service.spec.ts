@@ -118,11 +118,19 @@ describe("AgentBridgeService", () => {
     expect(sent(AGENT_CHANNEL_PROGRESS)[0][1]).toEqual({ callId: "c1", message: "halfway" });
   });
 
-  it("initialize prunes backups and survives a failed prune", async () => {
+  it("initialize prunes backups without waiting for it and survives a failed prune", async () => {
     expect(backups.prune).toHaveBeenCalledTimes(1);
-    backups.prune.and.rejectWith(new Error("disk gone"));
+
+    // a prune that never finishes doesn't hold up configuring main
+    backups.prune.and.returnValue(new Promise(() => undefined));
+    electron.invoke.calls.reset();
     await expectAsync(service.initialize()).toBeResolved();
     expect(electron.invoke).toHaveBeenCalledWith(AGENT_CHANNEL_CONFIGURE, jasmine.anything());
+
+    backups.prune.and.rejectWith(new Error("disk gone"));
+    await expectAsync(service.initialize()).toBeResolved();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(backups.prune).toHaveBeenCalledTimes(3);
     await call("list_backups");
     expect(JSON.parse(sent(AGENT_CHANNEL_RESULT)[0][1].result.text)).toEqual({ backups: [] });
   });

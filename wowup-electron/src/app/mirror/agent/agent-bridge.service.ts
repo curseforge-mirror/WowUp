@@ -118,11 +118,8 @@ export class AgentBridgeService {
       console.error("Agent sandbox cleanup failed", e);
     }
 
-    try {
-      await this._backupService.prune();
-    } catch (e) {
-      console.error("Agent backup prune failed", e);
-    }
+    // Not awaited: deleting old backups never delays the MCP server starting
+    this._backupService.prune().catch((e) => console.error("Agent backup prune failed", e));
 
     try {
       await this.configure(await this.getConfig());
