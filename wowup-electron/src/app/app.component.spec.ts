@@ -26,6 +26,7 @@ import { WowUpService } from "./services/wowup/wowup.service";
 import { ZoomService } from "./services/zoom/zoom.service";
 import { AddonProviderFactory } from "./services/addons/addon.provider.factory";
 import { mockPreload } from "./tests/test-helpers";
+import { AgentBridgeService } from "./mirror/agent/agent-bridge.service";
 
 describe("AppComponent", () => {
   let addonServiceSpy: AddonService;
@@ -125,6 +126,7 @@ describe("AppComponent", () => {
             { provide: WowUpAddonService, useValue: wowUpAddonServiceSpy },
             { provide: WarcraftInstallationService, useValue: warcraftInstallationService },
             { provide: ZoomService, useValue: zoomService },
+            { provide: AgentBridgeService, useValue: { initialize: () => Promise.resolve() } },
             { provide: AddonProviderFactory, useValue: addonProviderService },
           ],
         },

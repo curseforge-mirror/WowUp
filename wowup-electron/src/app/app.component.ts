@@ -56,6 +56,7 @@ import { AddonService } from "./services/addons/addon.service";
 import { AnalyticsService } from "./services/analytics/analytics.service";
 import { FileService } from "./services/files/file.service";
 import { LinkService } from "./services/links/link.service";
+import { AgentBridgeService } from "./mirror/agent/agent-bridge.service";
 import { SessionService } from "./services/session/session.service";
 import { SnackbarService } from "./services/snackbar/snackbar.service";
 import { PreferenceStorageService } from "./services/storage/preference-storage.service";
@@ -131,6 +132,7 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     private _zoomService: ZoomService,
     private _wowUpProtocolService: WowUpProtocolService,
     private _linkService: LinkService,
+    private _agentBridge: AgentBridgeService,
     public electronService: ElectronService,
     public overlayContainer: OverlayContainer,
     public sessionService: SessionService,
@@ -187,6 +189,7 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
       .subscribe((update) => this.promptBundleRestart(update));
 
     this._wowUpProtocolService.initialize();
+    void this._agentBridge.initialize();
   }
 
   /**
