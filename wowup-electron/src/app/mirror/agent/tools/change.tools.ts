@@ -558,13 +558,13 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
 
   /** A plan-based preview with its dependencies noted */
   const withDependencies = (preview: ChangePreview, plan: InstallPlan, installed: Addon[]): ChangePreview => {
-    const deps = dependenciesOf(plan, installed);
-    if (deps.length === 0) {
+    const needed = dependenciesOf(plan, installed);
+    if (needed.length === 0) {
       return preview;
     }
-    const list = deps.map((d) => `${d.provider} ${d.externalId}`).join(", ");
-    const what = deps.length === 1 ? "1 required dependency" : `${deps.length} required dependencies`;
-    return { ...preview, action: `${preview.action}; may also install ${what}: ${list}`, alsoInstalls: deps };
+    const list = needed.map((d) => `${d.provider} ${d.externalId}`).join(", ");
+    const what = needed.length === 1 ? "1 required dependency" : `${needed.length} required dependencies`;
+    return { ...preview, action: `${preview.action}; may also install ${what}: ${list}`, alsoInstalls: needed };
   };
 
   const recordOnlyPreview = (installation: WowInstallation, action: string): ChangePreview => ({

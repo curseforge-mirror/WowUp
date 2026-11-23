@@ -1,9 +1,9 @@
 import { dirname, join, relative, resolve, sep } from "path";
 import { Addon, AddonSearchResult, DownloadAuth, WowInstallation } from "wowup-lib-core";
 
+import { getLatestFile } from "../../../utils/search-result.utils";
 import { AgentToolContext, AgentToolSet } from "../agent-tool";
 import { agentSandboxPath } from "../agent-settings";
-import { getLatestFile } from "../../../utils/search-result.utils";
 import { InstallationNameDeps, resolveAddon, resolveInstallationFor } from "../resolve";
 import { canonicalProvider } from "./discovery.tools";
 import { downloadToSandbox, resolveScopedPath, safeName } from "./release-download";
