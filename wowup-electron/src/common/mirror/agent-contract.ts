@@ -105,7 +105,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "get_addon_details",
     description:
-      "Get details for one addon: summary, author, links, latest files with per-file game versions and folders. Give addonId for an installed addon, or provider and externalId for any addon.",
+      "Get details for one addon: summary, author, links, latest files with per-file game versions, folders and dependencies (required ones WowUp installs along). Give addonId for an installed addon, or provider and externalId for any addon.",
     inputSchema: schema({ installation: INSTALLATION, addonId: ADDON_ID, provider: PROVIDER, externalId: EXTERNAL_ID }),
   },
   {

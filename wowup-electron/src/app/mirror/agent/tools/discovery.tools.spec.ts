@@ -170,11 +170,21 @@ describe("discovery tools", () => {
           gameVersions: ["3.3.5", "3.4.0"],
           downloadUrl: "d",
           releaseDate: new Date("2024-01-01T00:00:00Z"),
+          dependencies: [
+            { externalAddonId: "100", type: 2 },
+            { externalAddonId: "200", type: 3 },
+            { externalAddonId: "300", type: 1 },
+          ],
         },
       ],
     });
     const { tools } = make({ getProvider: () => ({ getById }) });
     const res: any = await tools.get_addon_details({ provider: "Curse", externalId: "9" }, ctx);
+    expect(res.files[0].dependencies).toEqual([
+      { externalId: "100", type: "required" },
+      { externalId: "200", type: "optional" },
+      { externalId: "300", type: "embedded" },
+    ]);
     expect(res.files[0].gameVersions).toEqual(["3.3.5", "3.4.0"]);
     expect(res.files[0].folders).toEqual(["F"]);
     expect(res.files[0].releaseDate).toBe("2024-01-01T00:00:00.000Z");

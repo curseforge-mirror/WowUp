@@ -2,6 +2,7 @@ import { firstValueFrom, Observable } from "rxjs";
 import {
   Addon,
   AddonCategory,
+  AddonDependencyType,
   AddonSearchResult,
   AddonSearchResultFile,
   getEnumName,
@@ -95,6 +96,13 @@ function sameProvider(a: string | undefined, filter: string | undefined): boolea
   return !filter || (a ?? "").toLowerCase() === canonicalProvider(filter).toLowerCase();
 }
 
+const DEPENDENCY_TYPES: Record<number, string> = {
+  [AddonDependencyType.Embedded]: "embedded",
+  [AddonDependencyType.Required]: "required",
+  [AddonDependencyType.Optional]: "optional",
+  [AddonDependencyType.Other]: "other",
+};
+
 function trimFile(f: AddonSearchResultFile): Record<string, unknown> {
   return {
     fileId: f.externalId,
@@ -104,6 +112,11 @@ function trimFile(f: AddonSearchResultFile): Record<string, unknown> {
     gameVersions: f.gameVersions ?? (f.gameVersion ? [f.gameVersion] : []),
     folders: f.folders ?? [],
     downloadUrl: f.downloadUrl,
+    // Ids at the same provider; WowUp installs the required ones along with the addon
+    dependencies: (f.dependencies ?? []).map((d) => ({
+      externalId: String(d.externalAddonId),
+      type: DEPENDENCY_TYPES[d.type] ?? "other",
+    })),
   };
 }
 

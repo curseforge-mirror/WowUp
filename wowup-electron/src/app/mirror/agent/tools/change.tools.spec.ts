@@ -1076,4 +1076,35 @@ describe("change tools", () => {
       /addonId.*installedProvider and installedExternalId/,
     );
   });
+
+  it("install previews list the required dependencies WowUp installs along", async () => {
+    const withDeps = searchResult({
+      files: [
+        file({
+          dependencies: [
+            { externalAddonId: "500", type: 2 },
+            { externalAddonId: "1", type: 2 },
+            { externalAddonId: "600", type: 3 },
+          ],
+        }),
+      ],
+    });
+    // Alpha (Curse 1) is installed already, so WowUp skips it; the optional one isn't installed
+    const m = make({ records: [rec({ id: "a1" })], result: withDeps });
+    const preview: any = await m.tools.install_addon({ provider: "Curse", externalId: "12345", preview: true }, m.ctx);
+    expect(preview.alsoInstalls).toEqual([{ provider: "Curse", externalId: "500" }]);
+    expect(preview.action).toMatch(/may also install 1 required dependency: Curse 500/);
+
+    const replaced: any = await m.tools.replace_addon(
+      { addonId: "a1", provider: "Curse", externalId: "12345", preview: true },
+      m.ctx,
+    );
+    expect(replaced.alsoInstalls).toEqual([{ provider: "Curse", externalId: "500" }]);
+
+    const none: any = await make().tools.install_addon(
+      { provider: "Curse", externalId: "12345", preview: true },
+      m.ctx,
+    );
+    expect(none.alsoInstalls).toBeUndefined();
+  });
 });

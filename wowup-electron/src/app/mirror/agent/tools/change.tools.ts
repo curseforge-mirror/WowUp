@@ -1,6 +1,7 @@
 import { firstValueFrom, Observable } from "rxjs";
 import {
   Addon,
+  AddonDependencyType,
   AddonSearchResult,
   AddonSearchResultFile,
   DownloadAuth,
@@ -40,6 +41,11 @@ export interface ChangePreview {
   foldersReplaced: string[];
   /** Whether the addon keeps its folder names (and so its SavedVariables and settings) */
   settingsCarryOver: boolean | "partial";
+  /**
+   * Required dependencies of the release that aren't installed from its provider yet: WowUp installs them along
+   * (skipping one whose folders are already there). Their names and folders are only known when they install.
+   */
+  alsoInstalls?: Array<{ provider: string; externalId: string }>;
 }
 
 export interface ChangedLine {
@@ -538,6 +544,29 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
   const claimants = (installed: Addon[], folders: string[]): Addon[] =>
     installed.filter((a) => overlaps(foldersOf(a), folders));
 
+  /** The release's required dependencies not yet installed from its provider, as WowUp's install looks them up */
+  const dependenciesOf = (plan: InstallPlan, installed: Addon[]): Array<{ provider: string; externalId: string }> =>
+    [
+      ...new Set(
+        (plan.file.dependencies ?? [])
+          .filter((d) => d.type === AddonDependencyType.Required)
+          .map((d) => String(d.externalAddonId)),
+      ),
+    ]
+      .filter((id) => id !== plan.line.externalId && !installed.some((a) => isProvider(a, plan.line.provider, id)))
+      .map((externalId) => ({ provider: plan.line.provider, externalId }));
+
+  /** A plan-based preview with its dependencies noted */
+  const withDependencies = (preview: ChangePreview, plan: InstallPlan, installed: Addon[]): ChangePreview => {
+    const deps = dependenciesOf(plan, installed);
+    if (deps.length === 0) {
+      return preview;
+    }
+    const list = deps.map((d) => `${d.provider} ${d.externalId}`).join(", ");
+    const what = deps.length === 1 ? "1 required dependency" : `${deps.length} required dependencies`;
+    return { ...preview, action: `${preview.action}; may also install ${what}: ${list}`, alsoInstalls: deps };
+  };
+
   const recordOnlyPreview = (installation: WowInstallation, action: string): ChangePreview => ({
     action,
     installation: nameOf(installation),
@@ -580,7 +609,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
           foldersReplaced: onDisk(folders, disk),
           settingsCarryOver: installCarryOver(folders, disk, droppedUnknowns(installed, folders)),
         };
-        return preview;
+        return withDependencies(preview, plan, installed);
       }
 
       const addon = await newAddonFor(installation, plan);
@@ -816,7 +845,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
           foldersReplaced: onDisk([...foldersOf(old), ...folders], disk),
           settingsCarryOver: carryOver(foldersOf(old), folders),
         };
-        return preview;
+        return withDependencies(preview, plan, installed);
       }
 
       const addon = await newAddonFor(installation, plan);
