@@ -14,10 +14,12 @@ import { PreferenceStorageService } from "../../services/storage/preference-stor
 import { SensitiveStorageService } from "../../services/storage/sensitive-storage.service";
 import { WowUpService } from "../../services/wowup/wowup.service";
 import { WtfService } from "../../services/wtf/wtf.service";
+import { AddonBrokerService } from "../../services/addons/addon-broker.service";
 import { AddonProviderFactory } from "../../services/addons/addon.provider.factory";
 import { AddonService } from "../../services/addons/addon.service";
 import { SessionService } from "../../services/session/session.service";
 import { WarcraftInstallationService } from "../../services/warcraft/warcraft-installation.service";
+import { WarcraftService } from "../../services/warcraft/warcraft.service";
 import { AgentBackupService } from "./agent-backup.service";
 import { AgentBridgeService } from "./agent-bridge.service";
 
@@ -75,6 +77,8 @@ describe("AgentBridgeService", () => {
         { provide: DownloadService, useValue: {} },
         { provide: WtfService, useValue: {} },
         { provide: AgentBackupService, useValue: backups },
+        { provide: AddonBrokerService, useValue: {} },
+        { provide: WarcraftService, useValue: {} },
       ],
     });
     service = TestBed.inject(AgentBridgeService);

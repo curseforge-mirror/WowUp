@@ -15,6 +15,7 @@ import {
   AgentStatus,
   AgentToolResult,
 } from "../../../common/mirror/agent-contract";
+import { AddonBrokerService } from "../../services/addons/addon-broker.service";
 import { AddonProviderFactory } from "../../services/addons/addon.provider.factory";
 import { AddonService } from "../../services/addons/addon.service";
 import { ElectronService } from "../../services/electron/electron.service";
@@ -25,6 +26,7 @@ import { PreferenceStorageService } from "../../services/storage/preference-stor
 import { SensitiveStorageService } from "../../services/storage/sensitive-storage.service";
 import { WtfService } from "../../services/wtf/wtf.service";
 import { WarcraftInstallationService } from "../../services/warcraft/warcraft-installation.service";
+import { WarcraftService } from "../../services/warcraft/warcraft.service";
 import { WowUpService } from "../../services/wowup/wowup.service";
 import { AgentBackupService } from "./agent-backup.service";
 import {
@@ -35,6 +37,7 @@ import {
   SENSITIVE_AGENT_KEY,
 } from "./agent-settings";
 import { AgentToolHandler, AgentToolSet } from "./agent-tool";
+import { ChangeProvider, createChangeTools } from "./tools/change.tools";
 import { createDiscoveryTools, DiscoveryProvider } from "./tools/discovery.tools";
 import { createHealthTools } from "./tools/health.tools";
 import { createInspectTools, InspectProvider } from "./tools/inspect.tools";
@@ -63,6 +66,8 @@ export class AgentBridgeService {
     private _downloadService: DownloadService,
     private _wtfService: WtfService,
     private _backupService: AgentBackupService,
+    private _addonBrokerService: AddonBrokerService,
+    private _warcraftService: WarcraftService,
   ) {}
 
   public registerTools(tools: AgentToolSet): void {
@@ -100,6 +105,24 @@ export class AgentBridgeService {
         getSelected: () => this._sessionService.getSelectedWowInstallation(),
         wtfService: this._wtfService,
         fileService: this._fileService,
+      }),
+    );
+
+    this.registerTools(
+      createChangeTools({
+        addonService: this._addonService,
+        brokerService: this._addonBrokerService,
+        backupService: this._backupService,
+        installService: this._warcraftInstallationService,
+        getSelected: () => this._sessionService.getSelectedWowInstallation(),
+        getProvider: (name) => this._addonProviderFactory.getProvider<ChangeProvider>(name),
+        listAddonFolders: async (installation) => {
+          const addonsPath = this._warcraftService.getAddonFolderPath(installation);
+          return (await this._fileService.pathExists(addonsPath)) ? this._fileService.readdir(addonsPath) : [];
+        },
+        encodeBase64: (text) => this._electronService.invoke<string>("base64-encode", text),
+        notifyChanged: () => this._sessionService.notifyAddonsChanged(),
+        getSecret: (key) => this._sensitiveStorage.getAsync(key),
       }),
     );
 
