@@ -25,13 +25,25 @@ export type RendererRelay = CallTool & { failAll(reason: string): void };
 
 export const WINDOW_GONE_TEXT = "WowUp's window went away; try again";
 
+/** The longest a tool call waits for WowUp's window to answer */
+export const RELAY_TIMEOUT_MS = 30 * 60 * 1000;
+
 interface Pending {
   resolve: (r: AgentToolResult) => void;
   onProgress: (message: string) => void;
 }
 
-export function createRendererRelay(target: RelayTarget, ipc: RelayIpc): RendererRelay {
+export const TIMEOUT_TEXT =
+  "WowUp did not answer this call within 30 minutes, so it was given up. A change may still finish in WowUp; " +
+  "check list_backups and list_addons before trying again.";
+
+export function createRendererRelay(
+  target: RelayTarget,
+  ipc: RelayIpc,
+  options: { timeoutMs?: number } = {},
+): RendererRelay {
   const pending = new Map<string, Pending>();
+  const timeoutMs = options.timeoutMs ?? RELAY_TIMEOUT_MS;
 
   const failAll = (reason: string): void => {
     const all = [...pending.values()];
@@ -60,13 +72,24 @@ export function createRendererRelay(target: RelayTarget, ipc: RelayIpc): Rendere
     }
     const callId = randomUUID();
     return new Promise<AgentToolResult>((resolve) => {
-      pending.set(callId, { resolve, onProgress });
+      // A hung call in the window must not hang the agent forever; the timer never keeps the app running
+      const timer = setTimeout(() => {
+        if (pending.delete(callId)) {
+          resolve({ isError: true, text: TIMEOUT_TEXT });
+        }
+      }, timeoutMs);
+      timer.unref?.();
+      const settle = (result: AgentToolResult) => {
+        clearTimeout(timer);
+        resolve(result);
+      };
+      pending.set(callId, { resolve: settle, onProgress });
       const request: AgentCallRequest = { callId, name, args };
       try {
         target.send(AGENT_CHANNEL_CALL, request);
       } catch {
         pending.delete(callId);
-        resolve({ isError: true, text: WINDOW_GONE_TEXT });
+        settle({ isError: true, text: WINDOW_GONE_TEXT });
       }
     });
   }) as RendererRelay;

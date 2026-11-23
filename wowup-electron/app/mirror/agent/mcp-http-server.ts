@@ -20,7 +20,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 function keyMatches(header: string | undefined, key: string): boolean {
-  if (!header || !header.startsWith("Bearer ")) {
+  if (!header || !header.startsWith("Bearer ") || key.trim() === "") {
     return false;
   }
   const given = Buffer.from(header.slice("Bearer ".length));
@@ -78,6 +78,15 @@ export class McpHttpServer {
     await this.stop();
 
     const requestedUrl = `http://${HOST}:${config.port}${MCP_PATH}`;
+    if (typeof config.key !== "string" || config.key.trim() === "") {
+      // Every request would have to match an empty key; never listen like that
+      this.current = {
+        listening: false,
+        url: requestedUrl,
+        error: "No agent key is set; turn agent control off and on to make one.",
+      };
+      return this.status;
+    }
     const server = http.createServer((req, res) => {
       this.handleRequest(req, res, config.key, callTool).catch((e) => {
         if (!res.headersSent) {

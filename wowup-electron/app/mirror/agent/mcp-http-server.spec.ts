@@ -62,6 +62,17 @@ describe("McpHttpServer", () => {
     expect(wrong.status).to.equal(401);
   });
 
+  it("refuses to start without a key", async () => {
+    const s = make();
+    const status = await s.start({ port: 0, key: "" }, slowTool);
+    expect(status.listening).to.equal(false);
+    expect(status.error).to.match(/key/i);
+    expect(s.status.listening).to.equal(false);
+
+    const blank = await s.start({ port: 0, key: "   " }, slowTool);
+    expect(blank.listening).to.equal(false);
+  });
+
   it("rejects a foreign Origin with 403", async () => {
     const s = make();
     await s.start({ port: 0, key: KEY }, slowTool);

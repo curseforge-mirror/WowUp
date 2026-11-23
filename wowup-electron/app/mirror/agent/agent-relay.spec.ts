@@ -5,9 +5,9 @@ import {
   AGENT_CHANNEL_PROGRESS,
   AGENT_CHANNEL_RESULT,
 } from "../../../src/common/mirror/agent-contract";
-import { createRendererRelay } from "./agent-relay";
+import { createRendererRelay, RELAY_TIMEOUT_MS } from "./agent-relay";
 
-function setup() {
+function setup(options?: { timeoutMs?: number }) {
   const sent: { channel: string; payload: any }[] = [];
   const listeners: Record<string, (e: unknown, p: any) => void> = {};
   let onDestroyed: () => void = () => undefined;
@@ -19,7 +19,7 @@ function setup() {
     },
   };
   const ipc = { on: (channel: string, l: (e: unknown, p: any) => void) => (listeners[channel] = l) };
-  const relay = createRendererRelay(target, ipc);
+  const relay = createRendererRelay(target, ipc, options);
   return { sent, listeners, relay, destroy: () => onDestroyed() };
 }
 
@@ -63,5 +63,22 @@ describe("agent relay", () => {
     const target = { send: () => undefined, isDestroyed: () => true, once: () => undefined };
     const relay = createRendererRelay(target, { on: () => undefined });
     expect((await relay("a", {}, () => undefined)).isError).to.equal(true);
+  });
+
+  it("relay gives up on a call WowUp doesn't answer within 30 minutes", async () => {
+    expect(RELAY_TIMEOUT_MS).to.equal(30 * 60 * 1000);
+    const { sent, listeners, relay } = setup({ timeoutMs: 20 });
+    const res = await relay("update_addons", {}, () => undefined);
+    expect(res.isError).to.equal(true);
+    expect(res.text).to.match(/did not answer.*list_backups/);
+
+    // a late answer is dropped
+    listeners[AGENT_CHANNEL_RESULT]({}, { callId: sent[0].payload.callId, result: { text: "late" } });
+
+    // an answered call isn't failed later
+    const answered = relay("list_addons", {}, () => undefined);
+    listeners[AGENT_CHANNEL_RESULT]({}, { callId: sent[1].payload.callId, result: { text: "ok" } });
+    expect(await answered).to.deep.equal({ text: "ok" });
+    await new Promise((r) => setTimeout(r, 40));
   });
 });
