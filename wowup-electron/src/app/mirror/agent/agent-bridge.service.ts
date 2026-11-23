@@ -139,7 +139,11 @@ export class AgentBridgeService {
     }
 
     try {
-      await this._fileService.removeAll(agentSandboxPath(this._wowUpService.applicationFolderPath));
+      const sandbox = agentSandboxPath(this._wowUpService.applicationFolderPath);
+      // A missing sandbox is already clear; deleting it would only log an error
+      if (await this._fileService.pathExists(sandbox)) {
+        await this._fileService.removeAll(sandbox);
+      }
     } catch (e) {
       console.error("Agent sandbox cleanup failed", e);
     }

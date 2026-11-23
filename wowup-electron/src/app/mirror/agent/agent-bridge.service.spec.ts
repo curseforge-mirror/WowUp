@@ -29,6 +29,7 @@ describe("AgentBridgeService", () => {
   let listener: (evt: unknown, req: unknown) => void;
   let prefs: Record<string, string>;
   let secrets: Record<string, string>;
+  let files: jasmine.SpyObj<FileService>;
   let backups: { prune: jasmine.Spy; list: jasmine.Spy; rollback: jasmine.Spy };
 
   const call = async (name: string, args: Record<string, unknown> = {}) => {
@@ -45,6 +46,10 @@ describe("AgentBridgeService", () => {
       list: jasmine.createSpy("list").and.resolveTo([]),
       rollback: jasmine.createSpy("rollback"),
     };
+    files = jasmine.createSpyObj("FileService", {
+      removeAll: Promise.resolve(true),
+      pathExists: Promise.resolve(true),
+    });
     electron = jasmine.createSpyObj<ElectronService>("ElectronService", ["invoke", "on", "send", "off"]);
     electron.invoke.and.resolveTo({ listening: true, url: "http://127.0.0.1:17483/mcp" });
     electron.on.and.callFake(((_c: string, l: any) => {
@@ -68,7 +73,7 @@ describe("AgentBridgeService", () => {
         { provide: ElectronService, useValue: electron },
         { provide: PreferenceStorageService, useValue: prefSpy },
         { provide: SensitiveStorageService, useValue: secretSpy },
-        { provide: FileService, useValue: jasmine.createSpyObj("FileService", { removeAll: Promise.resolve(true) }) },
+        { provide: FileService, useValue: files },
         { provide: WowUpService, useValue: { applicationFolderPath: "C:\\data" } },
         { provide: AddonService, useValue: {} },
         { provide: AddonProviderFactory, useValue: {} },
@@ -120,6 +125,19 @@ describe("AgentBridgeService", () => {
     });
     await call("slow");
     expect(sent(AGENT_CHANNEL_PROGRESS)[0][1]).toEqual({ callId: "c1", message: "halfway" });
+  });
+
+  it("initialize clears an existing sandbox", () => {
+    expect(files.removeAll).toHaveBeenCalledTimes(1);
+  });
+
+  it("initialize leaves a missing sandbox alone and logs nothing", async () => {
+    files.pathExists.and.resolveTo(false);
+    files.removeAll.calls.reset();
+    const errorSpy = spyOn(console, "error");
+    await service.initialize();
+    expect(files.removeAll).not.toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
   });
 
   it("initialize prunes backups without waiting for it and survives a failed prune", async () => {
