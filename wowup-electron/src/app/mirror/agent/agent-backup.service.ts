@@ -596,32 +596,55 @@ export class AgentBackupService {
     const foldersOf = (a: Addon) => (a.installedFolderList ?? []).filter(isFolderName);
     const restoredNow = current.filter((a) => !!a.id && restoreIds.has(a.id));
 
-    // A record made after the backup is a reinstall of what the backup holds or the change added only when it
-    // claims nothing but the backup's or the change's folders and no other current record claims any of them, or
-    // it is the same addon; anything else (a rescan's re-created record of another addon, a later addon bundling a
-    // shared folder, a standalone library) is left alone with its folders
+    // A record made after the backup is a reinstall of what the backup holds or the change added when it is the
+    // same addon, or when the folders it alone claims are all the backup's or the change's (at least one, every
+    // name well-formed). A folder another record also claims is shared, so it says nothing either way. Anything
+    // else (a rescan's re-created record of another addon, a later addon bundling a shared folder, a standalone
+    // library next to an addon that bundles it) is left alone with its folders.
     const reinstallKeys = new Set([...restoreKeys, ...manifest.added.folders.map(folderKey)]);
-    const claimants = new Map<string, number>();
-    for (const a of current) {
-      for (const k of new Set(foldersOf(a).map(folderKey))) {
-        claimants.set(k, (claimants.get(k) ?? 0) + 1);
-      }
-    }
     const changedAddons: Array<Pick<Addon, "name" | "providerName" | "externalId">> = [
       ...manifest.records,
       ...(manifest.added.names ?? []).map((name) => ({ name })),
     ];
+    const isChangedAddon = (a: Addon) => changedAddons.some((c) => sameAddon(a, c));
+    /** The folders a record claims, once each, or undefined when it claims none or any name is malformed */
+    const claimedKeys = (a: Addon): string[] | undefined => {
+      const list = a.installedFolderList ?? [];
+      return list.length > 0 && list.every(isFolderName) ? [...new Set(list.map(folderKey))] : undefined;
+    };
+    // Later records that may be reinstalls (the same addon, or claiming nothing but the backup's or the change's
+    // folders) don't make a folder shared for one another: otherwise two later duplicates of a removed addon would
+    // each see the other's claim and both stay. One of them that stays anyway has every folder it claims also
+    // claimed by a record that is counted.
+    const maybeReinstalls = new Set(
+      current.filter(
+        (a) =>
+          !!a.id &&
+          !restoreIds.has(a.id) &&
+          !addedIds.has(a.id) &&
+          !knownIds.has(a.id) &&
+          (isChangedAddon(a) || (claimedKeys(a)?.every((k) => reinstallKeys.has(k)) ?? false)),
+      ),
+    );
+    const claimers = new Map<string, Addon[]>();
+    for (const a of current) {
+      for (const k of new Set(foldersOf(a).map(folderKey))) {
+        claimers.set(k, [...(claimers.get(k) ?? []), a]);
+      }
+    }
     const isReinstall = (a: Addon) => {
-      const claimed = a.installedFolderList ?? [];
-      const onlyTheirs =
-        claimed.length > 0 &&
-        claimed.every(
-          (f) => isFolderName(f) && reinstallKeys.has(folderKey(f)) && (claimants.get(folderKey(f)) ?? 0) <= 1,
-        );
-      return onlyTheirs || changedAddons.some((c) => sameAddon(a, c));
+      if (isChangedAddon(a)) {
+        return true;
+      }
+      const own = (claimedKeys(a) ?? []).filter(
+        (k) => !(claimers.get(k) ?? []).some((o) => o !== a && !maybeReinstalls.has(o)),
+      );
+      return own.length > 0 && own.every((k) => reinstallKeys.has(k));
     };
 
-    // Records to remove: what the change added, and later reinstalls (two records would otherwise claim one folder)
+    // Records to remove: what the change added, and later reinstalls (otherwise the reinstall and the restored
+    // record would both claim the restored folders, and updating or removing the reinstall would overwrite or
+    // delete them)
     const removeRecords = current.filter(
       (a) => !!a.id && !restoreIds.has(a.id) && (addedIds.has(a.id) || (!knownIds.has(a.id) && isReinstall(a))),
     );

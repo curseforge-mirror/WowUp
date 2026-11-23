@@ -585,6 +585,125 @@ describe("AgentBackupService", () => {
     expect(manifestOf(r.safetyBackupId).records.map((a: any) => a.id)).toEqual(["a-foo3"]);
   });
 
+  it("rollback removes a later reinstall whose shared folder other addons also claim", async () => {
+    const fooWithLib = { ...foo, installedFolderList: ["Foo", "Foo_Options", "LibShared"] };
+    const ls: any = { id: "a-ls", name: "LibShared", installationId: "i1", installedFolderList: ["LibShared"] };
+    store.set("a-foo", { ...fooWithLib });
+    store.set("a-ls", { ...ls });
+    fs.put(join(ADDONS, "LibShared", "lib.lua"), "lib v1");
+    const m = await service.create("remove_addon", inst, [fooWithLib]);
+
+    // the change removes Foo (LibShared stays for a-ls); later the user installs Baz, which bundles LibShared, and
+    // reinstalls Foo from another provider under a new name and id
+    await fs.api().remove(join(ADDONS, "Foo"));
+    await fs.api().remove(join(ADDONS, "Foo_Options"));
+    store.delete("a-foo");
+    const baz: any = { id: "a-baz", name: "Baz", installationId: "i1", installedFolderList: ["Baz", "LibShared"] };
+    store.set("a-baz", { ...baz });
+    fs.put(join(ADDONS, "Baz", "baz.lua"), "baz");
+    const fork: any = {
+      id: "a-fork",
+      name: "Foo (fork)",
+      providerName: "GitHub",
+      externalId: "someone/foo",
+      installationId: "i1",
+      installedFolderList: ["Foo", "Foo_Options", "LibShared"],
+    };
+    store.set("a-fork", { ...fork });
+    fs.put(CORE, "core fork");
+    fs.put(join(ADDONS, "Foo_Options", "opt.lua"), "opt fork");
+    jasmine.clock().tick(1000);
+
+    const r = await service.rollback(m.id);
+
+    expect(store.has("a-fork")).toBeFalse();
+    expect(store.get("a-foo")).toEqual(fooWithLib);
+    expect([...store.values()].filter((a) => a.installedFolderList.includes("Foo")).map((a) => a.id)).toEqual([
+      "a-foo",
+    ]);
+    expect(fs.read(CORE)).toBe("core v1");
+    expect(fs.read(join(ADDONS, "Foo_Options", "opt.lua"))).toBe("opt v1");
+    expect(fs.read(join(ADDONS, "LibShared", "lib.lua"))).toBe("lib v1");
+    // the addons that share LibShared are untouched
+    expect(store.get("a-ls")).toEqual(ls);
+    expect(store.get("a-baz")).toEqual(baz);
+    expect(fs.read(join(ADDONS, "Baz", "baz.lua"))).toBe("baz");
+    expect(r.removedRecords).toBe(1);
+    expect(r.removedFolders).toEqual([]);
+    expect(manifestOf(r.safetyBackupId).records.map((a: any) => a.id)).toEqual(["a-fork"]);
+    expect(fs.read(join(BACKUPS, r.safetyBackupId, "addons", "Foo", "core.lua"))).toBe("core fork");
+  });
+
+  it("rollback removes every later duplicate of a removed addon", async () => {
+    const m = await service.create("remove_addon", inst, [foo]);
+
+    // the change removes Foo; later two records from other providers each claim only Foo's folders
+    await fs.api().remove(join(ADDONS, "Foo"));
+    await fs.api().remove(join(ADDONS, "Foo_Options"));
+    store.delete("a-foo");
+    const fork: any = {
+      id: "a-fork",
+      name: "Foo (fork)",
+      installationId: "i1",
+      installedFolderList: ["Foo", "Foo_Options"],
+    };
+    const classic: any = {
+      id: "a-classic",
+      name: "Foo Classic",
+      installationId: "i1",
+      installedFolderList: ["Foo", "Foo_Options"],
+    };
+    store.set("a-fork", { ...fork });
+    store.set("a-classic", { ...classic });
+    fs.put(CORE, "core fork");
+    fs.put(join(ADDONS, "Foo_Options", "opt.lua"), "opt fork");
+    jasmine.clock().tick(1000);
+
+    const r = await service.rollback(m.id);
+
+    expect(store.has("a-fork")).toBeFalse();
+    expect(store.has("a-classic")).toBeFalse();
+    expect(store.get("a-foo")).toEqual(foo);
+    expect([...store.values()].filter((a) => a.installedFolderList.includes("Foo")).map((a) => a.id)).toEqual([
+      "a-foo",
+    ]);
+    expect(fs.read(CORE)).toBe("core v1");
+    expect(r.removedRecords).toBe(2);
+    expect(r.removedFolders).toEqual([]);
+    expect(
+      manifestOf(r.safetyBackupId)
+        .records.map((a: any) => a.id)
+        .sort(),
+    ).toEqual(["a-classic", "a-fork"]);
+  });
+
+  it("rollback removes a later duplicate that shares its only folder with a same-named reinstall", async () => {
+    const m = await service.create("remove_addon", inst, [foo]);
+
+    // later the user reinstalls Foo under its own name with an extra folder, and a fork claims just Foo
+    await fs.api().remove(join(ADDONS, "Foo"));
+    await fs.api().remove(join(ADDONS, "Foo_Options"));
+    store.delete("a-foo");
+    const foo2: any = { id: "a-foo2", name: "Foo", installationId: "i1", installedFolderList: ["Foo", "Foo_Extra"] };
+    const fork: any = { id: "a-fork", name: "Foo (fork)", installationId: "i1", installedFolderList: ["Foo"] };
+    store.set("a-foo2", { ...foo2 });
+    store.set("a-fork", { ...fork });
+    fs.put(CORE, "core v9");
+    fs.put(join(ADDONS, "Foo_Extra", "x.lua"), "extra");
+    jasmine.clock().tick(1000);
+
+    const r = await service.rollback(m.id);
+
+    expect(store.has("a-foo2")).toBeFalse();
+    expect(store.has("a-fork")).toBeFalse();
+    expect([...store.values()].filter((a) => a.installedFolderList.includes("Foo")).map((a) => a.id)).toEqual([
+      "a-foo",
+    ]);
+    expect(fs.exists(join(ADDONS, "Foo_Extra"))).toBeFalse();
+    expect(r.removedRecords).toBe(2);
+    expect(r.removedFolders).toEqual(["Foo_Extra"]);
+  });
+
   it("rollback never removes a folder that existed when the backup was taken", async () => {
     const m = await service.create("update_addons", inst, [foo]);
 
