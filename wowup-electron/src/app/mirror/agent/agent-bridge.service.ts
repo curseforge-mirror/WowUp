@@ -23,6 +23,7 @@ import { DownloadService } from "../../services/download/download.service";
 import { SessionService } from "../../services/session/session.service";
 import { PreferenceStorageService } from "../../services/storage/preference-storage.service";
 import { SensitiveStorageService } from "../../services/storage/sensitive-storage.service";
+import { WtfService } from "../../services/wtf/wtf.service";
 import { WarcraftInstallationService } from "../../services/warcraft/warcraft-installation.service";
 import { WowUpService } from "../../services/wowup/wowup.service";
 import {
@@ -34,6 +35,7 @@ import {
 } from "./agent-settings";
 import { AgentToolHandler, AgentToolSet } from "./agent-tool";
 import { createDiscoveryTools, DiscoveryProvider } from "./tools/discovery.tools";
+import { createHealthTools } from "./tools/health.tools";
 import { createInspectTools, InspectProvider } from "./tools/inspect.tools";
 
 @Injectable({
@@ -57,6 +59,7 @@ export class AgentBridgeService {
     private _warcraftInstallationService: WarcraftInstallationService,
     private _sessionService: SessionService,
     private _downloadService: DownloadService,
+    private _wtfService: WtfService,
   ) {}
 
   public registerTools(tools: AgentToolSet): void {
@@ -84,6 +87,16 @@ export class AgentBridgeService {
         getSelected: () => this._sessionService.getSelectedWowInstallation(),
         getProvider: (name) => this._addonProviderFactory.getProvider<InspectProvider>(name),
         getSecret: (key) => this._sensitiveStorage.getAsync(key),
+      }),
+    );
+
+    this.registerTools(
+      createHealthTools({
+        addonService: this._addonService,
+        installService: this._warcraftInstallationService,
+        getSelected: () => this._sessionService.getSelectedWowInstallation(),
+        wtfService: this._wtfService,
+        fileService: this._fileService,
       }),
     );
 
