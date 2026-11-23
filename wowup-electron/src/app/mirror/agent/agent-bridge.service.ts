@@ -15,10 +15,14 @@ import {
   AgentStatus,
   AgentToolResult,
 } from "../../../common/mirror/agent-contract";
+import { AddonProviderFactory } from "../../services/addons/addon.provider.factory";
+import { AddonService } from "../../services/addons/addon.service";
 import { ElectronService } from "../../services/electron/electron.service";
 import { FileService } from "../../services/files/file.service";
+import { SessionService } from "../../services/session/session.service";
 import { PreferenceStorageService } from "../../services/storage/preference-storage.service";
 import { SensitiveStorageService } from "../../services/storage/sensitive-storage.service";
+import { WarcraftInstallationService } from "../../services/warcraft/warcraft-installation.service";
 import { WowUpService } from "../../services/wowup/wowup.service";
 import {
   agentSandboxPath,
@@ -28,6 +32,7 @@ import {
   SENSITIVE_AGENT_KEY,
 } from "./agent-settings";
 import { AgentToolHandler, AgentToolSet } from "./agent-tool";
+import { createDiscoveryTools, DiscoveryProvider } from "./tools/discovery.tools";
 
 @Injectable({
   providedIn: "root",
@@ -45,6 +50,10 @@ export class AgentBridgeService {
     private _sensitiveStorage: SensitiveStorageService,
     private _fileService: FileService,
     private _wowUpService: WowUpService,
+    private _addonService: AddonService,
+    private _addonProviderFactory: AddonProviderFactory,
+    private _warcraftInstallationService: WarcraftInstallationService,
+    private _sessionService: SessionService,
   ) {}
 
   public registerTools(tools: AgentToolSet): void {
@@ -52,6 +61,16 @@ export class AgentBridgeService {
   }
 
   public async initialize(): Promise<void> {
+    this.registerTools(
+      createDiscoveryTools({
+        addonService: this._addonService,
+        installService: this._warcraftInstallationService,
+        getSelected: () => this._sessionService.getSelectedWowInstallation(),
+        getProvider: (name) => this._addonProviderFactory.getProvider<DiscoveryProvider>(name),
+        getSecret: (key) => this._sensitiveStorage.getAsync(key),
+      }),
+    );
+
     if (!this._listening) {
       this._listening = true;
       this._electronService.on(AGENT_CHANNEL_CALL, (_evt, req: AgentCallRequest) => {
