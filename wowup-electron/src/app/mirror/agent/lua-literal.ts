@@ -54,7 +54,7 @@ class LuaParser {
   private skip(): void {
     for (;;) {
       const c = this.s[this.pos];
-      if (c === " " || c === "\t" || c === "\r" || c === "\n" || c === "﻿") {
+      if (c === " " || c === "\t" || c === "\r" || c === "\n" || c === "\uFEFF") {
         this.pos++;
       } else if (c === "-" && this.s[this.pos + 1] === "-") {
         const start = this.pos;

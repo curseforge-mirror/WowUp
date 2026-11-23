@@ -57,4 +57,9 @@ describe("parseLuaAssignments", () => {
     expect(() => parseLuaAssignments("a = @")).toThrowError(/position 4/);
     expect(() => parseLuaAssignments('a = "unterminated')).toThrowError(/position/);
   });
+
+  it("skips a byte order mark at the start of the file", () => {
+    const out: any = parseLuaAssignments("\uFEFFBugGrabberDB = { x = 1 }");
+    expect(out).toEqual({ BugGrabberDB: { x: 1 } });
+  });
 });
