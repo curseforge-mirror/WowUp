@@ -24,18 +24,32 @@ describe("resolve", () => {
     expect(resolveInstallation("ascension", installs).id).toBe("a3");
   });
 
-  it("resolveInstallationFor matches the rendered display name of a {defaultName} label", async () => {
-    const raw = inst("a9", "{defaultName}", WowClientType.Forever);
+  it("resolveInstallationFor takes WowUp's named list as it is and the selected installation from it", async () => {
+    // getWowInstallationsAsync names each installation already ({defaultName} labels become real names)
+    const named = { ...inst("a9", "{defaultName}", WowClientType.Forever), displayName: "World of Warcraft: Forever" };
+    const getInstallationDisplayName = jasmine.createSpy("getInstallationDisplayName");
+    // the session's copy can still carry the template
+    let selected: WowInstallation | undefined = { ...named, displayName: "{defaultName}" };
     const deps = {
       installService: {
-        getWowInstallationsAsync: async () => [raw, inst("a1", "Main", WowClientType.Retail)],
-        getInstallationDisplayName: async (i: WowInstallation) =>
-          i.label === "{defaultName}" ? "World of Warcraft: Forever" : i.label,
+        getWowInstallationsAsync: async () => [named, inst("a1", "Main", WowClientType.Retail)],
+        getInstallationDisplayName,
       },
-      getSelected: () => undefined,
+      getSelected: () => selected,
     };
     expect((await resolveInstallationFor(deps, "World of Warcraft: Forever")).id).toBe("a9");
     await expectAsync(resolveInstallationFor(deps, "nope")).toBeRejectedWithError(/World of Warcraft: Forever/);
+    const byDefault = await resolveInstallationFor(deps, undefined);
+    expect(byDefault.id).toBe("a9");
+    expect(byDefault.displayName).toBe("World of Warcraft: Forever");
+    expect(getInstallationDisplayName).not.toHaveBeenCalled();
+
+    // a selected installation missing from the list is named, keeping its stored name when naming fails
+    selected = inst("gone", "Old", WowClientType.Retail);
+    getInstallationDisplayName.and.rejectWith(new Error("no translations yet"));
+    expect((await resolveInstallationFor(deps, undefined)).displayName).toBe("Old");
+    getInstallationDisplayName.and.resolveTo("Renamed");
+    expect((await resolveInstallationFor(deps, undefined)).displayName).toBe("Renamed");
   });
 
   it("resolve refuses a bare addon name and lists matches", () => {

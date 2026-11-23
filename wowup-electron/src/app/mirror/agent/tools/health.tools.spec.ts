@@ -40,8 +40,8 @@ describe("health tools", () => {
           .and.resolveTo([{ addon, installation: { gameVersion: "x" } }]),
       },
       installService: {
-        getWowInstallationsAsync: async () => installs,
-        getInstallationDisplayName: async (i: any) => i.displayName,
+        getWowInstallationsAsync: jasmine.createSpy("getWowInstallationsAsync").and.callFake(async () => installs),
+        getInstallationDisplayName: jasmine.createSpy("getInstallationDisplayName"),
       },
       getSelected: () => undefined,
       wtfService: { getWtfPath: () => WTF },
@@ -73,6 +73,9 @@ describe("health tools", () => {
       releasedAt: "2026-11-01T00:00:00.000Z",
     });
     expect(r.gameVersionMismatches[0].name).toBe("Alpha");
+    // the installation list is read (already named) once
+    expect(deps.installService.getWowInstallationsAsync).toHaveBeenCalledTimes(1);
+    expect(deps.installService.getInstallationDisplayName).not.toHaveBeenCalled();
   });
 
   it("check_updates with all syncs once and covers every installation", async () => {

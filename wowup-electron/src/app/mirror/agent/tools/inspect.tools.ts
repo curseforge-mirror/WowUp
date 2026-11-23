@@ -64,7 +64,8 @@ export interface InspectDeps {
     }): Promise<string>;
   };
   addonService: {
-    getAddons(installation: WowInstallation, rescan?: boolean): Promise<Addon[]>;
+    /** The stored records only; getAddons would rescan an installation that has none */
+    getAllAddons(installation: WowInstallation): Promise<Addon[]>;
     getInstallBasePath(addon: Addon): string;
   };
   installService: InstallationNameDeps["installService"];
@@ -120,7 +121,7 @@ export function createInspectTools(deps: InspectDeps): AgentToolSet {
     const installs = await deps.installService.getWowInstallationsAsync();
     const all: Addon[] = [];
     for (const i of installs) {
-      all.push(...((await deps.addonService.getAddons(i)) ?? []));
+      all.push(...((await deps.addonService.getAllAddons(i)) ?? []));
     }
     return resolveAddon({ addonId }, all);
   };

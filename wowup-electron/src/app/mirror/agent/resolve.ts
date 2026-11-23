@@ -9,29 +9,43 @@ export interface InstallationNameDeps {
   getSelected: () => WowInstallation | undefined;
 }
 
-/** Set `displayName` to the name the UI shows, since a stored label can be the raw "{defaultName}" template */
-export async function nameInstallations(
-  installService: InstallationNameDeps["installService"],
-  installs: WowInstallation[],
-): Promise<WowInstallation[]> {
-  for (const i of installs) {
-    i.displayName = await installService.getInstallationDisplayName(i);
-  }
-  return installs;
-}
-
-/** All installations, named for display */
+/** All installations, named as the UI shows them (getWowInstallationsAsync regenerates each display name) */
 export async function loadInstallations(deps: InstallationNameDeps): Promise<WowInstallation[]> {
-  return nameInstallations(deps.installService, await deps.installService.getWowInstallationsAsync());
+  return deps.installService.getWowInstallationsAsync();
 }
 
-export async function resolveInstallationFor(deps: InstallationNameDeps, arg: unknown): Promise<WowInstallation> {
-  const installs = await loadInstallations(deps);
+/**
+ * The installation WowUp shows, taken from the named list. The session's own copy can still carry a stored
+ * "{defaultName}" template; one that isn't in the list is named here, keeping its stored name if that fails.
+ */
+async function selectedOf(
+  deps: InstallationNameDeps,
+  installs: WowInstallation[],
+): Promise<WowInstallation | undefined> {
   const selected = deps.getSelected();
-  if (selected) {
-    await nameInstallations(deps.installService, [selected]);
+  if (!selected) {
+    return undefined;
   }
-  return resolveInstallation(arg, installs, selected);
+  const listed = installs.find((i) => i.id === selected.id);
+  if (listed) {
+    return listed;
+  }
+  try {
+    return { ...selected, displayName: await deps.installService.getInstallationDisplayName(selected) };
+  } catch (e) {
+    console.warn(`[agent] could not name installation ${selected.id}`, e);
+    return selected;
+  }
+}
+
+/** The installation `arg` names, from the given list (or a freshly loaded one) */
+export async function resolveInstallationFor(
+  deps: InstallationNameDeps,
+  arg: unknown,
+  installs?: WowInstallation[],
+): Promise<WowInstallation> {
+  const list = installs ?? (await loadInstallations(deps));
+  return resolveInstallation(arg, list, await selectedOf(deps, list));
 }
 
 function describe(i: WowInstallation): string {

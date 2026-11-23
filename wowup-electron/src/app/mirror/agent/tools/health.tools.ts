@@ -110,7 +110,7 @@ export function createHealthTools(deps: HealthDeps): AgentToolSet {
         await addonService.syncAllClients();
         targets = installs;
       } else {
-        targets = [await resolveInstallationFor(deps, args.installation)];
+        targets = [await resolveInstallationFor(deps, args.installation, installs)];
       }
       const results: Record<string, unknown>[] = [];
       for (const installation of targets) {

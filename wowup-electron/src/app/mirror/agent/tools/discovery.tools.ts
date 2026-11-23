@@ -35,7 +35,8 @@ export interface DiscoveryProvider {
 export interface DiscoveryDeps {
   addonService: {
     search(query: string, installation: WowInstallation): Promise<AddonSearchResult[]>;
-    getAddons(installation: WowInstallation, rescan?: boolean): Promise<Addon[]>;
+    /** The stored records only; getAddons would rescan an installation that has none */
+    getAllAddons(installation: WowInstallation): Promise<Addon[]>;
     getAddonByUrl(url: URL, installation: WowInstallation): Promise<SearchByUrlResult | undefined>;
     getFullDescription(
       installation: WowInstallation,
@@ -182,7 +183,7 @@ export function createDiscoveryTools(deps: DiscoveryDeps): AgentToolSet {
     const provider = str(args, "provider");
     const externalId = str(args, "externalId");
     if (addonId) {
-      const addon = resolveAddon({ addonId }, (await addonService.getAddons(installation)) ?? []);
+      const addon = resolveAddon({ addonId }, (await addonService.getAllAddons(installation)) ?? []);
       return { provider: addon.providerName ?? "", externalId: addon.externalId ?? "", addon };
     }
     if (provider && externalId) {
@@ -201,7 +202,7 @@ export function createDiscoveryTools(deps: DiscoveryDeps): AgentToolSet {
           name: i.displayName,
           clientType: getEnumName(WowClientType, i.clientType),
           path: i.location,
-          addonCount: ((await addonService.getAddons(i)) ?? []).length,
+          addonCount: ((await addonService.getAllAddons(i)) ?? []).length,
           selected: selected?.id === i.id,
         })),
       );
@@ -211,7 +212,7 @@ export function createDiscoveryTools(deps: DiscoveryDeps): AgentToolSet {
       const installation = await resolveInstall(args);
       const name = str(args, "name")?.toLowerCase();
       const provider = str(args, "provider");
-      let addons = (await addonService.getAddons(installation)) ?? [];
+      let addons = (await addonService.getAllAddons(installation)) ?? [];
       if (name) {
         addons = addons.filter((a) => a.name.toLowerCase().includes(name));
       }

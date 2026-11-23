@@ -988,6 +988,14 @@ describe("AgentBackupService", () => {
     expect(list[0].installation).toBe("World of Warcraft: Forever");
   });
 
+  it("a backup keeps the stored installation name when naming it fails", async () => {
+    (TestBed.inject(WarcraftInstallationService) as any).getInstallationDisplayName = async () => {
+      throw new Error("no translations yet");
+    };
+    const m = await service.create("update_addons", { ...inst, displayName: "My Retail" }, [foo]);
+    expect(m.installationName).toBe("My Retail");
+  });
+
   it("refuses backup ids and folder names that leave their folder", async () => {
     await expectAsync(service.rollback(join("..", "..", "Windows"))).toBeRejectedWithError(/backup id/i);
     await expectAsync(service.rollback("..")).toBeRejectedWithError(/backup id/i);

@@ -30,6 +30,7 @@ describe("discovery tools", () => {
     const addonService = jasmine.createSpyObj("AddonService", [
       "search",
       "getAddons",
+      "getAllAddons",
       "getAddonByUrl",
       "getFullDescription",
       "getChangelogForSearchResult",
@@ -37,6 +38,9 @@ describe("discovery tools", () => {
       "getCategoryPage",
       "getFeaturedAddons",
     ]);
+    // getAddons rescans an installation that has no records; read tools must only read
+    addonService.getAddons.and.rejectWith(new Error("getAddons rescans"));
+    addonService.getAllAddons.and.resolveTo([]);
     const deps = {
       addonService,
       installService: {
@@ -70,24 +74,35 @@ describe("discovery tools", () => {
     );
   });
 
-  it("list_installations shows the resolved name for a {defaultName} label", async () => {
-    const raw = { ...install("i1"), label: "{defaultName}", displayName: "{defaultName}" };
+  it("list_installations reads stored records and takes WowUp's installation names as they are", async () => {
+    // getWowInstallationsAsync already names each installation (a {defaultName} label becomes its real name)
+    const named = { ...install("i1"), label: "{defaultName}", displayName: "World of Warcraft: Forever" };
+    const getInstallationDisplayName = jasmine.createSpy("getInstallationDisplayName");
     const { addonService, tools } = make({
-      installService: {
-        getWowInstallationsAsync: async () => [raw],
-        getInstallationDisplayName: async () => "World of Warcraft: Forever",
-      },
+      installService: { getWowInstallationsAsync: async () => [named], getInstallationDisplayName },
     });
-    addonService.getAddons.and.resolveTo([]);
+    addonService.getAllAddons.and.resolveTo([addon({})]);
     const res: any = await tools.list_installations({}, ctx);
     expect(res[0].name).toBe("World of Warcraft: Forever");
+    expect(res[0].addonCount).toBe(1);
+    expect(getInstallationDisplayName).not.toHaveBeenCalled();
+    expect(addonService.getAddons).not.toHaveBeenCalled();
     const byName: any = await tools.list_addons({ installation: "World of Warcraft: Forever" }, ctx);
-    expect(byName).toEqual([]);
+    expect(byName.length).toBe(1);
+
+    const details = make({
+      installService: { getWowInstallationsAsync: async () => [named], getInstallationDisplayName },
+      getProvider: () => ({ getById: async () => ({ name: "Alpha", files: [] }) }),
+    });
+    details.addonService.getAllAddons.and.resolveTo([addon({})]);
+    const found: any = await details.tools.get_addon_details({ addonId: "a1" }, ctx);
+    expect(found.installed.addonId).toBe("a1");
+    expect(details.addonService.getAddons).not.toHaveBeenCalled();
   });
 
   it("list_addons filters by hasUpdate", async () => {
     const { addonService, tools } = make();
-    addonService.getAddons.and.resolveTo([
+    addonService.getAllAddons.and.resolveTo([
       addon({ id: "a1", name: "Alpha", latestVersion: "2.0" }),
       addon({ id: "a2", name: "Beta" }),
     ]);

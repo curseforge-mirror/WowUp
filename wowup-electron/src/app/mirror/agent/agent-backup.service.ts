@@ -442,7 +442,7 @@ export class AgentBackupService {
         tool: o.tool,
         createdAt: now.toISOString(),
         installationId: o.installation.id,
-        installationName: await this._installationService.getInstallationDisplayName(o.installation),
+        installationName: await this.nameOf(o.installation),
         records: o.records,
         folders: copied,
         savedVariables,
@@ -470,6 +470,16 @@ export class AgentBackupService {
         console.error(`[agent-backup] could not remove incomplete backup ${id}`, cleanup);
       }
       throw new Error(`Could not take a backup (${o.tool}): ${message(e)}`);
+    }
+  }
+
+  /** The name the UI shows (a stored label can be the "{defaultName}" template), else the stored one */
+  private async nameOf(installation: WowInstallation): Promise<string> {
+    try {
+      return await this._installationService.getInstallationDisplayName(installation);
+    } catch (e) {
+      console.warn(`[agent-backup] could not name installation ${installation.id}`, e);
+      return installation.displayName || installation.label || installation.id;
     }
   }
 

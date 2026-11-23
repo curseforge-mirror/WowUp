@@ -74,7 +74,11 @@ describe("inspect tools", () => {
       fileService,
       downloadService,
       addonService: {
-        getAddons: async () => [addon],
+        getAllAddons: async () => [addon],
+        // rescans an installation that has no records; reading must not
+        getAddons: async () => {
+          throw new Error("getAddons rescans");
+        },
         getInstallBasePath: () => "C:\\wow\\AddOns",
       },
       installService: {

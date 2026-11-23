@@ -230,8 +230,7 @@ describe("change tools", () => {
       backupService,
       installService: {
         getWowInstallationsAsync: async () => [opts.install ?? INSTALL],
-        getInstallationDisplayName: async (i: any) =>
-          i.label === "{defaultName}" ? "World of Warcraft: Forever" : i.displayName,
+        getInstallationDisplayName: async (i: any) => i.displayName,
       },
       getSelected: () => undefined,
       getProvider: () => provider,
@@ -305,11 +304,14 @@ describe("change tools", () => {
     );
   });
 
-  it("preview names a {defaultName} installation by its resolved name", async () => {
+  it("preview names the selected installation as WowUp's named list does", async () => {
+    const named = { ...INSTALL, label: "{defaultName}", displayName: "World of Warcraft: Forever" };
     const m = make({
       records: [],
-      install: { ...INSTALL, label: "{defaultName}", displayName: "{defaultName}" },
+      install: named,
       results: { "1": alphaRelease() },
+      // the session's copy of the selected installation can still carry the template
+      deps: { getSelected: () => ({ ...named, displayName: "{defaultName}" }) },
     });
     const preview: any = await m.tools.install_addon({ provider: "curse", externalId: "12345", preview: true }, m.ctx);
     expect(preview.installation).toBe("World of Warcraft: Forever");
