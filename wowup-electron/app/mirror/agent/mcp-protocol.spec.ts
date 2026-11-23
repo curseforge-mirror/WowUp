@@ -103,4 +103,50 @@ describe("mcp-protocol", () => {
       ]);
     }
   });
+
+  it("tools/list serves each tool's annotations", async () => {
+    const res = await handleMcpMessage(req("tools/list"), noTool);
+    const tools = (res?.result as { tools: Array<{ name: string; annotations?: Record<string, unknown> }> }).tools;
+    const hint = (name: string, key: string) => tools.find((t) => t.name === name)?.annotations?.[key];
+    for (const t of tools) {
+      expect(typeof t.annotations?.readOnlyHint, t.name).to.equal("boolean");
+    }
+    const reads = [
+      "list_installations",
+      "list_addons",
+      "search_addons",
+      "get_addon_details",
+      "get_changelog",
+      "get_description",
+      "find_by_url",
+      "browse_category",
+      "featured_addons",
+      "list_versions",
+      "fetch_release",
+      "list_files",
+      "read_file",
+      "search_files",
+      "read_toc",
+      "get_addon_errors",
+      "export_addons",
+      "list_backups",
+    ];
+    expect(tools.filter((t) => t.annotations?.readOnlyHint === true).map((t) => t.name)).to.have.members(reads);
+    for (const name of [
+      "install_addon",
+      "remove_addon",
+      "replace_addon",
+      "rollback",
+      "rescan",
+      "update_addons",
+      "import_addons",
+      "switch_provider",
+    ]) {
+      expect(hint(name, "destructiveHint"), name).to.equal(true);
+    }
+    for (const name of ["set_auto_update", "set_ignored", "check_updates"]) {
+      expect(hint(name, "readOnlyHint"), name).to.equal(false);
+      expect(hint(name, "destructiveHint"), name).to.equal(false);
+    }
+  });
 });

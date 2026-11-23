@@ -38,10 +38,18 @@ export interface AgentProgress {
   message: string;
 }
 
+/** MCP tool annotations (hints for the agent app, e.g. whether to ask before calling) */
+export interface AgentToolAnnotations {
+  readOnlyHint: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+}
+
 export interface AgentToolDefinition {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  annotations?: AgentToolAnnotations;
 }
 
 type Prop = Record<string, unknown>;
@@ -73,18 +81,27 @@ function schema(properties: Record<string, Prop> = {}, required: string[] = []):
   return s;
 }
 
+/** Reads only (fetch_release and the inspection tools write only to WowUp's own sandbox) */
+const READ_ONLY: AgentToolAnnotations = { readOnlyHint: true };
+/** Changes WowUp's addon records only: settings, or update information */
+const RECORD_CHANGE: AgentToolAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: true };
+/** Overwrites, deletes or re-creates addon folders or records (each takes a backup first) */
+const DESTRUCTIVE: AgentToolAnnotations = { readOnlyHint: false, destructiveHint: true };
+
 const CHANGE_NOTE =
   " Takes a backup first and returns its id (backupId); use rollback to undo. Pass preview: true to see the effect without changing anything.";
 
 export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "list_installations",
+    annotations: READ_ONLY,
     description:
       "List the World of Warcraft installations WowUp manages (id, name, client type, folder path, addon count). Use the id or name as the `installation` argument of other tools.",
     inputSchema: schema(),
   },
   {
     name: "list_addons",
+    annotations: READ_ONLY,
     description:
       "List installed addons for an installation, trimmed to name, provider, externalId, installed and latest version, folders, auto-update, ignored and game versions. Optional filters narrow the list.",
     inputSchema: schema({
@@ -98,18 +115,21 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: "search_addons",
+    annotations: READ_ONLY,
     description:
       "Search all enabled providers for addons compatible with an installation. Returns { results, providerErrors }: name, provider, externalId, latest version, downloads and author per result, and the providers whose search failed.",
     inputSchema: schema({ query: str("Search text."), installation: INSTALLATION, provider: PROVIDER }, ["query"]),
   },
   {
     name: "get_addon_details",
+    annotations: READ_ONLY,
     description:
       "Get details for one addon: summary, author, links, latest files with per-file game versions, folders and dependencies (required ones WowUp installs along). Give addonId for an installed addon, or provider and externalId for any addon.",
     inputSchema: schema({ installation: INSTALLATION, addonId: ADDON_ID, provider: PROVIDER, externalId: EXTERNAL_ID }),
   },
   {
     name: "get_changelog",
+    annotations: READ_ONLY,
     description:
       "Get the changelog text of an addon's latest (or a given) version. Give addonId for an installed addon, or provider and externalId.",
     inputSchema: schema({
@@ -122,18 +142,21 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: "get_description",
+    annotations: READ_ONLY,
     description:
       "Get an addon's full description text from its provider. Give addonId for an installed addon, or provider and externalId.",
     inputSchema: schema({ installation: INSTALLATION, addonId: ADDON_ID, provider: PROVIDER, externalId: EXTERNAL_ID }),
   },
   {
     name: "find_by_url",
+    annotations: READ_ONLY,
     description:
       "Resolve an addon page URL (CurseForge, GitHub, WoWInterface, ...) to its provider and externalId plus basic details.",
     inputSchema: schema({ url: str("Addon page or repository URL."), installation: INSTALLATION }, ["url"]),
   },
   {
     name: "browse_category",
+    annotations: READ_ONLY,
     description:
       "Browse a provider's category listing (e.g. Curse categories). Returns { results } with name, provider, externalId and latest version per addon; the listing has a single page.",
     inputSchema: schema(
@@ -148,11 +171,13 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: "featured_addons",
+    annotations: READ_ONLY,
     description: "List the featured or popular addons for an installation's client type.",
     inputSchema: schema({ installation: INSTALLATION, provider: PROVIDER }),
   },
   {
     name: "list_versions",
+    annotations: READ_ONLY,
     description:
       "List an addon's release history (up to 50 files) for the installation's game flavor, with the file WowUp would install for it: fileId, version, release date, channel (stable, beta, alpha), game versions, folders, download url. CurseForge and GitHub give full history; other providers only the latest file.",
     inputSchema: schema({
@@ -165,6 +190,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: "fetch_release",
+    annotations: READ_ONLY,
     description:
       "Download a release of an addon into a sandbox folder, so its code can be inspected before installing: without a version the file install_addon would install for the installation, with one that version's file for the installation's flavor. Returns { root, path, files }; pass root to list_files, read_file, search_files and read_toc.",
     inputSchema: schema({
@@ -177,12 +203,14 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: "list_files",
+    annotations: READ_ONLY,
     description:
       "List files under a sandbox root (from fetch_release, or addon:<addonId>), optionally inside a subfolder.",
     inputSchema: schema({ root: ROOT, path: str("Subfolder relative to the root. Omit for the root.") }, ["root"]),
   },
   {
     name: "read_file",
+    annotations: READ_ONLY,
     description:
       "Read a text file under a sandbox root, paged by line. Returns { text, totalLines, nextLine? }; call again with startLine = nextLine for more.",
     inputSchema: schema(
@@ -197,6 +225,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: "search_files",
+    annotations: READ_ONLY,
     description:
       "Search file contents under a sandbox root for a text or regular expression. Returns up to 200 matches as file:line: text.",
     inputSchema: schema(
@@ -210,6 +239,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: "read_toc",
+    annotations: READ_ONLY,
     description:
       "Read an addon's TOC file(s) and return their `## Key: value` pairs (Interface, Version, Dependencies, ...). Give addonId for an installed addon, or root and folder.",
     inputSchema: schema({
@@ -220,6 +250,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: "check_updates",
+    annotations: RECORD_CHANGE,
     description:
       "Refresh addon data from the providers and report which addons have updates (name, installed version, new version) per installation. Reports progress per installation.",
     inputSchema: schema({
@@ -229,6 +260,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: "get_addon_errors",
+    annotations: READ_ONLY,
     description:
       "Read Lua errors captured by BugGrabber in the installation's SavedVariables, newest first. Each has message, counter, time, session, stack and the addon folder responsible.",
     inputSchema: schema({
@@ -239,6 +271,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: "install_addon",
+    annotations: DESTRUCTIVE,
     description:
       "Install an addon from a provider into an installation. With a version, installs that file and marks the addon ignored so it is not auto-updated." +
       CHANGE_NOTE,
@@ -249,6 +282,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: "update_addons",
+    annotations: DESTRUCTIVE,
     description: "Update the given installed addons, or all addons that have updates." + CHANGE_NOTE,
     inputSchema: schema({
       installation: INSTALLATION,
@@ -259,6 +293,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: "remove_addon",
+    annotations: DESTRUCTIVE,
     description:
       "Uninstall an installed addon and delete its folders. Give addonId, or provider and externalId." + CHANGE_NOTE,
     inputSchema: schema({
@@ -271,6 +306,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: "replace_addon",
+    annotations: DESTRUCTIVE,
     description:
       "Replace an installed addon (addonId, or installedProvider and installedExternalId) with another addon or release, given by provider and externalId (removes the old one, installs the new one). Preview reports whether settings carry over (same folders) or not." +
       CHANGE_NOTE,
@@ -292,6 +328,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: "switch_provider",
+    annotations: DESTRUCTIVE,
     description:
       "Move an installed addon (addonId, or installedProvider and installedExternalId) to another provider it is already known on (uses its recorded externalIds)." +
       CHANGE_NOTE,
@@ -309,6 +346,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: "set_auto_update",
+    annotations: RECORD_CHANGE,
     description:
       "Turn auto-update on or off for an installed addon. Give addonId, or provider and externalId." + CHANGE_NOTE,
     inputSchema: schema(
@@ -325,6 +363,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: "set_ignored",
+    annotations: RECORD_CHANGE,
     description:
       "Mark an installed addon as ignored (never updated) or not. Give addonId, or provider and externalId." +
       CHANGE_NOTE,
@@ -342,11 +381,13 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: "rescan",
+    annotations: DESTRUCTIVE,
     description: "Rescan an installation's AddOns folder and re-match folders to providers." + CHANGE_NOTE,
     inputSchema: schema({ installation: INSTALLATION, preview: PREVIEW }),
   },
   {
     name: "import_addons",
+    annotations: DESTRUCTIVE,
     description: "Install the addons listed in a WowUp export string or JSON into an installation." + CHANGE_NOTE,
     inputSchema: schema(
       { text: str("WowUp export string or its JSON."), installation: INSTALLATION, preview: PREVIEW },
@@ -355,18 +396,21 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: "export_addons",
+    annotations: READ_ONLY,
     description:
       "Export an installation's addon list as a WowUp export string that import_addons accepts. Read only, no backup is taken.",
     inputSchema: schema({ installation: INSTALLATION }),
   },
   {
     name: "list_backups",
+    annotations: READ_ONLY,
     description:
       "List backups taken before agent changes (id, tool, createdAt, addon names), newest first. Use an id with rollback.",
     inputSchema: schema(),
   },
   {
     name: "rollback",
+    annotations: DESTRUCTIVE,
     description:
       "Undo a change by restoring its backup: removes folders the change added, restores addon folders and records, and restores SavedVariables (deferred while WoW is running; call again after closing WoW to finish). Takes a safety backup of the current state first and returns its id.",
     inputSchema: schema({ backupId: str("Backup id from list_backups or a change result.") }, ["backupId"]),

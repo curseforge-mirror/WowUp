@@ -8,6 +8,7 @@ import {
   AGENT_CHANNEL_PROGRESS,
   AGENT_CHANNEL_RESULT,
   AGENT_DEFAULT_PORT,
+  AGENT_TOOLS,
   AgentCallRequest,
   AgentCallResponse,
   AgentConfig,
@@ -44,22 +45,11 @@ import { createInspectTools, InspectProvider } from "./tools/inspect.tools";
 import { createRecoveryTools } from "./tools/recovery.tools";
 
 /**
- * Tools that change addons or WowUp's addon records run one at a time: a change works out what it added by comparing
- * the records before and after it, which only holds when nothing else changes them meanwhile.
+ * Tools that change addons or WowUp's addon records (every tool not marked read-only) run one at a time: a change
+ * works out what it added by comparing the records before and after it, which only holds when nothing else changes
+ * them meanwhile.
  */
-const SERIAL_TOOLS = new Set([
-  "install_addon",
-  "update_addons",
-  "remove_addon",
-  "replace_addon",
-  "switch_provider",
-  "set_auto_update",
-  "set_ignored",
-  "rescan",
-  "import_addons",
-  "rollback",
-  "check_updates",
-]);
+const SERIAL_TOOLS = new Set(AGENT_TOOLS.filter((t) => t.annotations?.readOnlyHint !== true).map((t) => t.name));
 
 @Injectable({
   providedIn: "root",

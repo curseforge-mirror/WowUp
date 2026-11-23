@@ -4,6 +4,7 @@ import { BehaviorSubject } from "rxjs";
 import { TestBed } from "@angular/core/testing";
 
 import {
+  AGENT_TOOLS,
   AGENT_CHANNEL_CALL,
   AGENT_CHANNEL_CONFIGURE,
   AGENT_CHANNEL_PROGRESS,
@@ -295,5 +296,37 @@ describe("AgentBridgeService", () => {
     expect(addonService.saveAddon).toHaveBeenCalled();
     expect(session.autoUpdateComplete).toHaveBeenCalled();
     expect(session.notifyAddonsChanged).not.toHaveBeenCalled();
+  });
+
+  it("registers a handler for every tool it lists, and none it doesn't", () => {
+    const registered = [...(service as any)._tools.keys()].sort();
+    expect(registered).toEqual(AGENT_TOOLS.map((t) => t.name).sort());
+  });
+
+  it("queues exactly the tools that aren't read-only", async () => {
+    const order: string[] = [];
+    const hold = gate();
+    const tools: Record<string, any> = {};
+    for (const t of AGENT_TOOLS) {
+      tools[t.name] = async () => {
+        order.push(t.name);
+        if (t.name === "install_addon") {
+          await hold.opened;
+        }
+        return t.name;
+      };
+    }
+    service.registerTools(tools);
+    const first = start("first", "install_addon");
+    await tick();
+    const rest = AGENT_TOOLS.filter((t) => t.name !== "install_addon").map((t) => start(t.name, t.name));
+    await tick();
+    await tick();
+    // while the install runs, every read-only tool has answered and no other queued tool has started
+    const readOnly = AGENT_TOOLS.filter((t) => t.annotations?.readOnlyHint === true).map((t) => t.name);
+    expect([...order].sort()).toEqual(["install_addon", ...readOnly].sort());
+    hold.open();
+    await Promise.all([first, ...rest]);
+    expect(order.length).toBe(AGENT_TOOLS.length);
   });
 });
