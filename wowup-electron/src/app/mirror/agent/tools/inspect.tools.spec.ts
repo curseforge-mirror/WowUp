@@ -1,5 +1,6 @@
 /* eslint-disable */
 import { join } from "path";
+import { WowClientType } from "wowup-lib-core";
 
 import { createInspectTools, resolveScopedPath } from "./inspect.tools";
 
@@ -82,7 +83,12 @@ describe("inspect tools", () => {
       },
       getSelected: () => undefined,
       getProvider: () => ({
-        getById: async () => ({ files: [] }),
+        getById: async () => ({
+          name: "repo",
+          providerName: "GitHub",
+          externalId: "own/repo",
+          files: [{ version: "v2", channelType: 0, downloadUrl: "https://gh/a.zip", folders: ["repo"] }],
+        }),
         getDownloadAuth: async () => ({ headers: { a: "b" } }),
       }),
       getSecret: async () => undefined,
@@ -134,6 +140,78 @@ describe("inspect tools", () => {
     expect(fileService.unzipFile).toHaveBeenCalled();
     expect(res.files).toContain("Alpha/main.lua");
     expect(fileService.remove).toHaveBeenCalled();
+  });
+
+  it("fetch_release without a version downloads the file install_addon would install for the installation", async () => {
+    const getById = jasmine.createSpy("getById").and.resolveTo({
+      name: "Alpha",
+      providerName: "GitHub",
+      externalId: "own/repo",
+      files: [
+        { version: "Alpha-3-beta.zip", channelType: 1, downloadUrl: "https://gh/beta.zip", folders: [] },
+        { version: "Alpha-2-classic.zip", channelType: 0, downloadUrl: "https://gh/classic.zip", folders: [] },
+      ],
+    });
+    const fetchJson = jasmine.createSpy("fetchJson").and.resolveTo([]);
+    const install = {
+      id: "i1",
+      label: "i1",
+      displayName: "i1",
+      clientType: WowClientType.ClassicEra,
+      defaultAddonChannelType: 0,
+    };
+    const { tools, downloadService } = make({
+      fetchJson,
+      installService: {
+        getWowInstallationsAsync: async () => [install],
+        getInstallationDisplayName: async (i: any) => i.displayName,
+      },
+      getProvider: () => ({ getById, getDownloadAuth: async () => undefined }),
+    });
+    const res: any = await tools.fetch_release({ provider: "GitHub", externalId: "own/repo" }, ctx);
+    expect(getById).toHaveBeenCalledWith("own/repo", install);
+    expect(fetchJson).not.toHaveBeenCalled();
+    expect(downloadService.downloadZipFile).toHaveBeenCalledWith(
+      jasmine.objectContaining({ url: "https://gh/classic.zip" }),
+    );
+    expect(res.root).toBe("GitHub-own_repo-Alpha-2-classic.zip");
+  });
+
+  it("fetch_release with a version picks that version's asset for the installation's flavor", async () => {
+    const fetchJson = jasmine.createSpy("fetchJson").and.resolveTo([
+      {
+        id: 7,
+        tag_name: "v2",
+        prerelease: false,
+        draft: false,
+        assets: [
+          { name: "a-v2.zip", browser_download_url: "https://gh/a.zip", content_type: "application/zip" },
+          {
+            name: "a-v2-classic.zip",
+            browser_download_url: "https://gh/a-classic.zip",
+            content_type: "application/zip",
+          },
+        ],
+      },
+    ]);
+    const install = {
+      id: "i1",
+      label: "i1",
+      displayName: "i1",
+      clientType: WowClientType.ClassicEra,
+      defaultAddonChannelType: 0,
+    };
+    const { tools, downloadService } = make({
+      fetchJson,
+      installService: {
+        getWowInstallationsAsync: async () => [install],
+        getInstallationDisplayName: async (i: any) => i.displayName,
+      },
+    });
+    await tools.fetch_release({ provider: "GitHub", externalId: "own/repo", version: "v2" }, ctx);
+    expect(downloadService.downloadZipFile).toHaveBeenCalledWith(
+      jasmine.objectContaining({ url: "https://gh/a-classic.zip" }),
+    );
   });
 
   it("fetch_release downloads an installed addon's latest release", async () => {

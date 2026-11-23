@@ -63,30 +63,6 @@ export function safeName(text: string): string {
   return text.replace(/[^A-Za-z0-9._-]+/g, "_");
 }
 
-/** Runs at most `max` of the given tasks at a time, in the order they were queued */
-export function createLimiter(max: number): <T>(task: () => Promise<T>) => Promise<T> {
-  let running = 0;
-  const waiting: Array<() => void> = [];
-  return async <T>(task: () => Promise<T>): Promise<T> => {
-    if (running >= max) {
-      await new Promise<void>((go) => waiting.push(go));
-    } else {
-      running += 1;
-    }
-    try {
-      return await task();
-    } finally {
-      const next = waiting.shift();
-      if (next) {
-        // The slot passes straight to the next task
-        next();
-      } else {
-        running -= 1;
-      }
-    }
-  };
-}
-
 /**
  * Download a release zip with the provider's download auth and unzip it to `<sandbox>/<root>` (replacing what was
  * there). A failed download is retried as WowUp's installer does. Returns the unzipped folder's path. Only the sandbox

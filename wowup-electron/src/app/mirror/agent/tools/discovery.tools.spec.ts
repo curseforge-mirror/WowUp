@@ -174,4 +174,14 @@ describe("discovery tools", () => {
     await tools.browse_category({ category: "combat" }, ctx);
     expect(addonService.getCategoryPage.calls.mostRecent().args[0]).toBe(11);
   });
+
+  it("list_versions lists the installation's flavor", async () => {
+    const getModFiles = jasmine.createSpy("getModFiles").and.resolveTo({ data: { data: [] } });
+    const { tools } = make({
+      getSecret: async () => "KEY",
+      createCurseClient: () => ({ getModFiles, getModFileChangelog: async () => ({}) }),
+    });
+    await tools.list_versions({ provider: "Curse", externalId: "5" }, ctx);
+    expect(getModFiles).toHaveBeenCalledWith({ modId: 5, pageSize: 50, gameVersionTypeId: 67408 });
+  });
 });

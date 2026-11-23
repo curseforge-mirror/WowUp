@@ -17,13 +17,8 @@ import { getLatestFile } from "../../../utils/search-result.utils";
 import { AgentToolContext, AgentToolSet } from "../agent-tool";
 import { InstallationNameDeps, resolveAddon, resolveInstallationFor } from "../resolve";
 import { canonicalProvider } from "./discovery.tools";
-import {
-  createLimiter,
-  DOWNLOAD_RETRIES,
-  FOLDER_DOWNLOADS_AT_ONCE,
-  ReleaseFolderDeps,
-  releaseFolders,
-} from "./release-download";
+import { createLimiter } from "./limiter";
+import { DOWNLOAD_RETRIES, FOLDER_DOWNLOADS_AT_ONCE, ReleaseFolderDeps, releaseFolders } from "./release-download";
 import { CurseVersionClient, listVersions, toSearchResultFile } from "./versions";
 
 /** One addon in a preview: what a change adds or removes */
@@ -368,6 +363,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
     let file: AddonSearchResultFile | undefined;
     if (version) {
       const versions = await listVersions(provider, externalId, {
+        clientType: installation.clientType,
         getSecret: deps.getSecret,
         getLatest: (p, id) => providerOf(p).getById(id, installation),
         fetchJson: deps.fetchJson,

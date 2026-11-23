@@ -152,7 +152,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "list_versions",
     description:
-      "List an addon's release history (up to 50 files): fileId, version, release date, channel (stable, beta, alpha), game versions, folders, download url. CurseForge and GitHub give full history; other providers only the latest file.",
+      "List an addon's release history (up to 50 files) for the installation's game flavor, with the file WowUp would install for it: fileId, version, release date, channel (stable, beta, alpha), game versions, folders, download url. CurseForge and GitHub give full history; other providers only the latest file.",
     inputSchema: schema({
       addonId: ADDON_ID,
       provider: PROVIDER,
@@ -164,7 +164,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "fetch_release",
     description:
-      "Download a release (latest or a given version) of an addon into a sandbox folder, so its code can be inspected before installing. Returns { root, path, files }; pass root to list_files, read_file, search_files and read_toc.",
+      "Download a release of an addon into a sandbox folder, so its code can be inspected before installing: without a version the file install_addon would install for the installation, with one that version's file for the installation's flavor. Returns { root, path, files }; pass root to list_files, read_file, search_files and read_toc.",
     inputSchema: schema({
       provider: PROVIDER,
       externalId: EXTERNAL_ID,
@@ -282,10 +282,10 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
     description:
       "Move an installed addon to another provider it is already known on (uses its recorded externalIds)." +
       CHANGE_NOTE,
-    inputSchema: schema(
-      { addonId: ADDON_ID, provider: PROVIDER, installation: INSTALLATION, preview: PREVIEW },
-      ["addonId", "provider"],
-    ),
+    inputSchema: schema({ addonId: ADDON_ID, provider: PROVIDER, installation: INSTALLATION, preview: PREVIEW }, [
+      "addonId",
+      "provider",
+    ]),
   },
   {
     name: "set_auto_update",

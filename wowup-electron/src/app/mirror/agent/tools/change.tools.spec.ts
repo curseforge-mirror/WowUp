@@ -71,6 +71,8 @@ describe("change tools", () => {
       /** download url → how many times its download fails before it works */
       flaky?: Record<string, number>;
       mismatched?: string[];
+      /** Deps to add or replace */
+      deps?: any;
     } = {},
   ) => {
     let records: any[] = (opts.records ?? []).map((r) => ({ ...r }));
@@ -237,6 +239,7 @@ describe("change tools", () => {
       encodeBase64: async (text: string) => `b64(${text})`,
       getSecret: async () => undefined,
       whenIdle,
+      ...opts.deps,
     };
     const ctx = { progress: jasmine.createSpy("progress") };
     return {
@@ -948,5 +951,35 @@ describe("change tools", () => {
     const p = make({ records, results: { "1": alphaRelease() } });
     await p.tools.remove_addon({ addonId: "a1", preview: true }, p.ctx);
     expect(p.whenIdle).not.toHaveBeenCalled();
+  });
+
+  it("install_addon with a version picks it from the installation's flavor", async () => {
+    const getModFiles = jasmine.createSpy("getModFiles").and.resolveTo({
+      data: {
+        data: [
+          {
+            id: 31,
+            displayName: "26.10.01",
+            releaseType: 1,
+            fileDate: "2026-10-01",
+            gameVersions: ["1.15.0"],
+            modules: [{ name: "TipTac" }],
+            downloadUrl: "https://example.test/31.zip",
+          },
+        ],
+      },
+    });
+    const m = make({
+      deps: {
+        getSecret: async () => "KEY",
+        createCurseClient: () => ({ getModFiles, getModFileChangelog: async () => ({}) }),
+      },
+    });
+    const preview: any = await m.tools.install_addon(
+      { provider: "Curse", externalId: "12345", version: "26.10.01", preview: true },
+      m.ctx,
+    );
+    expect(getModFiles).toHaveBeenCalledWith({ modId: 12345, pageSize: 50, gameVersionTypeId: 67408 });
+    expect(preview.add[0].version).toBe("26.10.01");
   });
 });

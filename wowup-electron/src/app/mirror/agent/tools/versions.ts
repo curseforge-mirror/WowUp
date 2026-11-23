@@ -1,5 +1,12 @@
 import * as cfv2 from "curseforge-v2";
-import { AddonChannelType, AddonSearchResult, AddonSearchResultFile } from "wowup-lib-core";
+import {
+  AddonChannelType,
+  AddonSearchResult,
+  AddonSearchResultFile,
+  getWowClientGroupForType,
+  WowClientGroup,
+  WowClientType,
+} from "wowup-lib-core";
 
 import {
   ADDON_PROVIDER_CURSEFORGE,
@@ -8,6 +15,17 @@ import {
   PREF_CF2_API_KEY,
   PREF_GITHUB_PERSONAL_ACCESS_TOKEN,
 } from "../../../../common/constants";
+import {
+  anyAsset,
+  assetByName,
+  assetFromMetadata,
+  assetUrl,
+  GitHubAssetLite,
+  GitHubReleaseLite,
+  metadataAsset,
+  ReleaseMeta,
+} from "./github-assets";
+import { createLimiter } from "./limiter";
 
 export type AgentChannel = "stable" | "beta" | "alpha";
 
@@ -29,6 +47,8 @@ export interface CurseVersionClient {
 }
 
 export interface VersionDeps {
+  /** The installation's game client: versions are listed for its flavor, as WowUp's providers pick files */
+  clientType: WowClientType;
   /** Reads a sensitive-storage value (CurseForge key, GitHub token). */
   getSecret: (key: string) => Promise<string | undefined>;
   /** Latest-file lookup for providers without a history API (provider.getById). */
@@ -39,6 +59,31 @@ export interface VersionDeps {
 }
 
 const CHANNELS: AgentChannel[] = ["stable", "beta", "alpha"];
+
+/** GitHub releases whose release.json is read (newest first); older ones go by their file names */
+const GITHUB_METADATA_RELEASES = 10;
+const GITHUB_METADATA_AT_ONCE = 3;
+
+/** As CurseAddonProvider.getCFGameVersionType: the CurseForge game version type of a client */
+export function curseGameVersionTypeId(clientType: WowClientType): number {
+  switch (getWowClientGroupForType(clientType)) {
+    case WowClientGroup.Cata:
+      return cfv2.CF2WowGameVersionType.Cata;
+    case WowClientGroup.WOTLK:
+      return cfv2.CF2WowGameVersionType.WOTLK;
+    case WowClientGroup.BurningCrusade:
+      return cfv2.CF2WowGameVersionType.BurningCrusade;
+    case WowClientGroup.Classic:
+      return cfv2.CF2WowGameVersionType.Classic;
+    case WowClientGroup.Mists:
+      return cfv2.CF2WowGameVersionType.Mists;
+    case WowClientGroup.Forever:
+      return cfv2.CF2WowGameVersionType.Forever;
+    case WowClientGroup.Retail:
+    default:
+      return cfv2.CF2WowGameVersionType.Retail;
+  }
+}
 
 function channelFromType(type: AddonChannelType): AgentChannel {
   return CHANNELS[type] ?? "stable";
@@ -84,8 +129,17 @@ async function curseVersions(externalId: string, deps: VersionDeps): Promise<Age
     ? deps.createCurseClient(apiKey)
     : (new cfv2.CFV2Client({ apiKey }) as unknown as CurseVersionClient);
 
-  const res = await client.getModFiles({ modId, pageSize: 50 });
-  const files = res.data?.data ?? [];
+  // Only the installation's flavor, and as CurseAddonProvider.getLatestFiles: no alternative files, and a file that
+  // names its game version types must name this one
+  const gameVersionTypeId = curseGameVersionTypeId(deps.clientType);
+  const res = await client.getModFiles({ modId, pageSize: 50, gameVersionTypeId });
+  const files = (res.data?.data ?? []).filter(
+    (f) =>
+      f.exposeAsAlternative !== true &&
+      (!Array.isArray(f.sortableGameVersions) ||
+        f.sortableGameVersions.length === 0 ||
+        f.sortableGameVersions.some((v) => v.gameVersionTypeId === gameVersionTypeId)),
+  );
   const versions: AgentVersion[] = files.map((f) => ({
     fileId: String(f.id),
     version: f.displayName,
@@ -113,18 +167,6 @@ async function curseVersions(externalId: string, deps: VersionDeps): Promise<Age
   return versions;
 }
 
-interface GitHubReleaseLite {
-  id: number;
-  tag_name: string;
-  name?: string;
-  prerelease: boolean;
-  draft: boolean;
-  published_at?: string;
-  created_at?: string;
-  body?: string;
-  assets?: { name: string; browser_download_url: string }[];
-}
-
 async function githubVersions(externalId: string, deps: VersionDeps): Promise<AgentVersion[]> {
   if (!/^[^/\s]+\/[^/\s]+$/.test(externalId)) {
     throw new Error(`GitHub externalId must look like owner/repo, got "${externalId}".`);
@@ -135,17 +177,42 @@ async function githubVersions(externalId: string, deps: VersionDeps): Promise<Ag
     headers.Authorization = `Bearer ${token}`;
   }
   const fetchJson = deps.fetchJson ?? defaultFetchJson;
-  const releases = (await fetchJson(
-    `https://api.github.com/repos/${externalId}/releases?per_page=50`,
-    headers,
-  )) as GitHubReleaseLite[];
+  const releases = (
+    (await fetchJson(`https://api.github.com/repos/${externalId}/releases?per_page=50`, headers)) as GitHubReleaseLite[]
+  ).filter((r) => !r.draft);
+
+  // The zip WowUp's provider would install for the installation: release.json first (for the newest releases that
+  // have one), then the flavor in the file name
+  const metaSlot = createLimiter(GITHUB_METADATA_AT_ONCE);
+  const withMeta = releases
+    .map((r) => ({ r, file: metadataAsset(r) }))
+    .filter((m): m is { r: GitHubReleaseLite; file: GitHubAssetLite } => !!m.file)
+    .slice(0, GITHUB_METADATA_RELEASES);
+  const metaOf = new Map<number, ReleaseMeta | undefined>(
+    await Promise.all(
+      withMeta.map(async ({ r, file }) => {
+        try {
+          const meta = await metaSlot(() =>
+            fetchJson(assetUrl(file), { ...headers, Accept: "application/octet-stream" }),
+          );
+          return [r.id, meta as ReleaseMeta] as const;
+        } catch (e) {
+          console.error(`Agent could not read ${externalId} ${r.tag_name} release.json`, e);
+          return [r.id, undefined] as const;
+        }
+      }),
+    ),
+  );
+  let picked = releases.map(
+    (r) => [r, assetFromMetadata(r, deps.clientType, metaOf.get(r.id)) ?? assetByName(r, deps.clientType)] as const,
+  );
+  if (!picked.some(([, asset]) => !!asset)) {
+    // As the provider: with no zip for the flavor anywhere, any zip of the release
+    picked = releases.map((r) => [r, anyAsset(r)] as const);
+  }
 
   const versions: AgentVersion[] = [];
-  for (const r of releases) {
-    if (r.draft) {
-      continue;
-    }
-    const asset = (r.assets ?? []).find((a) => a.name.toLowerCase().endsWith(".zip"));
+  for (const [r, asset] of picked) {
     if (!asset) {
       continue;
     }
@@ -156,7 +223,7 @@ async function githubVersions(externalId: string, deps: VersionDeps): Promise<Ag
       channel: r.prerelease ? "beta" : "stable",
       gameVersions: [],
       folders: [],
-      downloadUrl: asset.browser_download_url,
+      downloadUrl: assetUrl(asset),
     };
     if (r.body) {
       v.changelog = r.body;

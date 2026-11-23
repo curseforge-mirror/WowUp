@@ -1,9 +1,10 @@
 import { dirname, join, relative, resolve, sep } from "path";
 import { Addon, AddonSearchResult, DownloadAuth, WowInstallation } from "wowup-lib-core";
 
-import { AgentToolSet } from "../agent-tool";
+import { AgentToolContext, AgentToolSet } from "../agent-tool";
 import { agentSandboxPath } from "../agent-settings";
-import { resolveAddon, resolveInstallation } from "../resolve";
+import { getLatestFile } from "../../../utils/search-result.utils";
+import { InstallationNameDeps, resolveAddon, resolveInstallationFor } from "../resolve";
 import { canonicalProvider } from "./discovery.tools";
 import { downloadToSandbox, resolveScopedPath, safeName } from "./release-download";
 import { AgentVersion, CurseVersionClient, listVersions } from "./versions";
@@ -66,7 +67,7 @@ export interface InspectDeps {
     getAddons(installation: WowInstallation, rescan?: boolean): Promise<Addon[]>;
     getInstallBasePath(addon: Addon): string;
   };
-  installService: { getWowInstallationsAsync(): Promise<WowInstallation[]> };
+  installService: InstallationNameDeps["installService"];
   getSelected: () => WowInstallation | undefined;
   getProvider: (name: string) => InspectProvider | undefined;
   getSecret: (key: string) => Promise<string | undefined>;
@@ -185,23 +186,16 @@ export function createInspectTools(deps: InspectDeps): AgentToolSet {
     return out;
   };
 
-  const pickVersion = (versions: AgentVersion[], wanted: string | undefined): AgentVersion => {
-    if (versions.length === 0) {
-      throw new Error("The provider lists no releases for this addon.");
+  const pickVersion = (versions: AgentVersion[], wanted: string): AgentVersion => {
+    const hit = versions.find((v) => v.version === wanted || v.fileId === wanted);
+    if (!hit) {
+      const known = versions
+        .slice(0, 10)
+        .map((v) => v.version)
+        .join(", ");
+      throw new Error(`Version "${wanted}" not found. Available: ${known || "none"}`);
     }
-    if (wanted) {
-      const hit = versions.find((v) => v.version === wanted || v.fileId === wanted);
-      if (!hit) {
-        throw new Error(
-          `Version "${wanted}" not found. Available: ${versions
-            .slice(0, 10)
-            .map((v) => v.version)
-            .join(", ")}`,
-        );
-      }
-      return hit;
-    }
-    return versions.find((v) => v.channel === "stable") ?? versions[0];
+    return hit;
   };
 
   const download = async (
@@ -209,9 +203,15 @@ export function createInspectTools(deps: InspectDeps): AgentToolSet {
     externalId: string,
     version: string,
     url: string,
+    ctx: AgentToolContext,
   ): Promise<{ root: string; path: string; files: string[]; filesTruncated?: boolean }> => {
     const root = safeName(`${provider}-${externalId}-${version}`);
-    const folder = await downloadToSandbox(deps, provider, root, url);
+    const folder = await downloadToSandbox(deps, provider, root, url, (retry, waitMs, e) =>
+      ctx.progress(
+        `Downloading ${provider} ${externalId} ${version} failed (${e instanceof Error ? e.message : String(e)}); ` +
+          `retry ${retry} in ${Math.round(waitMs / 1000)} s`,
+      ),
+    );
     const files = (await walk(folder)).map((p) => relOf({ base: folder }, p)).sort();
     return {
       root,
@@ -219,6 +219,14 @@ export function createInspectTools(deps: InspectDeps): AgentToolSet {
       files: files.slice(0, MAX_LISTED_FILES),
       ...(files.length > MAX_LISTED_FILES ? { filesTruncated: true } : {}),
     };
+  };
+
+  const providerOf = (name: string): InspectProvider => {
+    const p = deps.getProvider(canonicalProvider(name));
+    if (!p) {
+      throw new Error(`Provider "${name}" is not available (disabled or unknown).`);
+    }
+    return p;
   };
 
   return {
@@ -233,6 +241,7 @@ export function createInspectTools(deps: InspectDeps): AgentToolSet {
           addon.externalId ?? addon.id,
           addon.latestVersion ?? addon.installedVersion ?? "latest",
           addon.downloadUrl,
+          ctx,
         );
       }
       const providerArg = str(args, "provider");
@@ -241,22 +250,32 @@ export function createInspectTools(deps: InspectDeps): AgentToolSet {
         throw new Error("Pass provider and externalId, or an installed addonId.");
       }
       const provider = canonicalProvider(providerArg);
-      const installs = await deps.installService.getWowInstallationsAsync();
-      const versions = await listVersions(provider, externalId, {
-        getSecret: deps.getSecret,
-        getLatest: (name, id) => {
-          const p = deps.getProvider(canonicalProvider(name));
-          if (!p) {
-            throw new Error(`Provider "${name}" is not available (disabled or unknown).`);
-          }
-          return p.getById(id, resolveInstallation(args.installation, installs, deps.getSelected()));
-        },
-        fetchJson: deps.fetchJson,
-        createCurseClient: deps.createCurseClient,
-      });
-      const chosen = pickVersion(versions, wanted);
+      const installation = await resolveInstallationFor(deps, args.installation);
+      let chosen: { version: string; downloadUrl: string };
+      if (wanted) {
+        // That version's file for the installation's flavor, as a pinned install_addon takes it
+        const versions = await listVersions(provider, externalId, {
+          clientType: installation.clientType,
+          getSecret: deps.getSecret,
+          getLatest: (name, id) => providerOf(name).getById(id, installation),
+          fetchJson: deps.fetchJson,
+          createCurseClient: deps.createCurseClient,
+        });
+        chosen = pickVersion(versions, wanted);
+      } else {
+        // The file install_addon installs: the provider's latest for the installation's flavor and channel
+        const result = await providerOf(provider).getById(externalId, installation);
+        if (!result) {
+          throw new Error(`${provider} has no addon with externalId "${externalId}" for ${installation.displayName}.`);
+        }
+        const file = getLatestFile(result, installation.defaultAddonChannelType);
+        if (!file) {
+          throw new Error(`${provider} lists no files for ${result.name}.`);
+        }
+        chosen = file;
+      }
       ctx.progress(`Downloading ${provider} ${externalId} ${chosen.version}`);
-      return download(provider, externalId, chosen.version, chosen.downloadUrl);
+      return download(provider, externalId, chosen.version, chosen.downloadUrl, ctx);
     },
 
     list_files: async (args) => {

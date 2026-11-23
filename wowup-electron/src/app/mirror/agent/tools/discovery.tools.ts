@@ -335,6 +335,7 @@ export function createDiscoveryTools(deps: DiscoveryDeps): AgentToolSet {
       const installation = await resolveInstall(args);
       const t = await target(args, installation);
       return listVersions(t.provider, t.externalId, {
+        clientType: installation.clientType,
         getSecret: deps.getSecret,
         getLatest: (provider, externalId) => providerOf(provider).getById(externalId, installation),
         includeChangelog: args.includeChangelog === true,
