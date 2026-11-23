@@ -54,6 +54,7 @@ import { getAssetPath, getBundleDir, getPreloadPath, getRendererIndexPath } from
 import { validateGpuCache } from "./utils/gpu-cache-buster";
 import { AppEnv } from "./env/environment";
 import { blockAds } from "./mirror/block-ads";
+import { initializeAgent } from "./mirror/agent";
 
 // Started by the wowup-shell bootstrap, which has already set up logging, taken the single instance lock and
 // registered the protocol handler.
@@ -344,6 +345,7 @@ function createWindow(): BrowserWindow {
   initializeIpcHandlers(win);
   initializeStoreIpcHandlers();
   registerControllers({ window: win, addonStore: getAddonStore(), preferenceStore: getPreferenceStore() });
+  initializeAgent(win);
 
   if (AppEnv.buildFlavor === "wago") {
     wagoHandler.initialize(win);
