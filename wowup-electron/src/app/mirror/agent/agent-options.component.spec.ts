@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/unbound-method */
 import { BehaviorSubject } from "rxjs";
 
 import { ComponentFixture, TestBed } from "@angular/core/testing";
