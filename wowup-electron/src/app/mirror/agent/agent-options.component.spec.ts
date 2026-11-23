@@ -19,7 +19,6 @@ describe("AgentOptionsComponent", () => {
       "getConfig",
       "setEnabled",
       "setPort",
-      "regenerateKey",
     ]);
     (bridge as any).status$ = status$.asObservable();
     bridge.getConfig.and.callFake(() => Promise.resolve(config));
@@ -35,7 +34,7 @@ describe("AgentOptionsComponent", () => {
   };
 
   beforeEach(() => {
-    config = { enabled: false, port: 17483, key: "k" };
+    config = { enabled: false, port: 17483 };
     status$ = new BehaviorSubject<AgentStatus>({ listening: false, url: "" });
   });
 
@@ -49,7 +48,7 @@ describe("AgentOptionsComponent", () => {
   });
 
   it("shows the server error", async () => {
-    config = { enabled: true, port: 17483, key: "k" };
+    config = { enabled: true, port: 17483 };
     status$.next({ listening: false, url: "", error: "Port 17483 is already in use" });
     await setup();
     expect(fixture.nativeElement.textContent).toContain("Port 17483 is already in use");

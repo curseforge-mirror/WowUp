@@ -61,13 +61,13 @@ Installers carry both the shell and the bundle, so nothing is stranded.
 
 WowUp can let AI agents on the same computer search, install, update and remove addons, check addon health and roll changes back, through a local MCP server. It is **off by default**. Turn it on in **Options → Addons → Let AI agents control WowUp (MCP)**.
 
-Every change an agent makes is backed up first, in `agent-backups/` inside WowUp's app data folder (old backups are pruned after 30 days, keeping the newest 50). Downloads are unpacked and inspected in `agent-sandbox/` in the same folder, which is wiped at each start. The server listens on `127.0.0.1` only (default port 17483) and every request needs the key shown in Options (stored in `sensitive.json`; "New key" replaces it).
+Every change an agent makes is backed up first, in `agent-backups/` inside WowUp's app data folder (old backups are pruned after 30 days, keeping the newest 50). Downloads are unpacked and inspected in `agent-sandbox/` in the same folder, which is wiped at each start. The server listens on `127.0.0.1` only (default port 17483) and rejects any request carrying a foreign `Origin` header (which is what keeps web pages out). There is no key: like other local MCP servers (Figma's desktop app, JetBrains IDEs), it relies on the on/off switch, the local-only address and the Origin check, and ignores any `Authorization` header.
 
 Connecting, using the **Copy setup** buttons in Options:
 
 - **Claude Code**: paste the copied `claude mcp add --transport http wowup …` command into a terminal.
-- **Claude Desktop**: merge the copied JSON (`mcp-remote` via `npx`, the key in its `env` so the arguments hold no spaces) into `claude_desktop_config.json`.
-- **Other apps**: the copied JSON (`url` plus an `Authorization: Bearer` header) fits any client that speaks streamable HTTP.
+- **Claude Desktop**: merge the copied JSON (`mcp-remote` via `npx`) into `claude_desktop_config.json`.
+- **Other apps**: the copied JSON (just the `url`) fits any client that speaks streamable HTTP.
 
 Code lives in `wowup-electron/app/mirror/agent/` (main process: HTTP server) and `wowup-electron/src/app/mirror/agent/` (renderer: tools, backups, Options block). Hook points into upstream files:
 

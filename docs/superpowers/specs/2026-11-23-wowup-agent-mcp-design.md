@@ -19,9 +19,7 @@ layer that hides what is being installed.
 
 - An MCP server built into the fork, off until the user turns it on in Options, that any MCP-capable agent app can
   connect to: Claude Code, Cursor and others directly over HTTP; Claude Desktop (whose config file only takes stdio
-  servers) through the widely used `mcp-remote` bridge (`npx -y mcp-remote <url> --header "Authorization:${AUTH_HEADER}"`
-  with `"env": { "AUTH_HEADER": "Bearer <key>" }`, the form mcp-remote documents because Claude Desktop on Windows
-  splits an argument that contains a space).
+  servers) through the widely used `mcp-remote` bridge (`npx -y mcp-remote <url>`). No key to copy or paste.
 - Tools that cover WowUp's addon functionality: find, inspect, install, update, remove, switch source, rescan, check for
   updates, import and export lists, and settings such as auto-update and ignore.
 - Inspection tools: download any candidate release into a sandbox and list, read and search its files, for agents with
@@ -42,7 +40,7 @@ layer that hides what is being installed.
 - A diff that touches many upstream files or the dependency lockfile, so every upstream pull conflicts.
 - A second copy of WowUp's logic that drifts from the buttons' behaviour (install, remove and update must go through
   the same code the UI uses).
-- Ceremony: confirmation prompts, permission tiers and similar defensive layers. One on/off switch and one key.
+- Ceremony: confirmation prompts, permission tiers and similar defensive layers. One on/off switch.
 
 ## Constraints
 
@@ -67,8 +65,10 @@ sync because it is the UI's own code running.
 the window over one IPC channel pair of our own; a renderer service of our own runs it and sends the result back. The
 preload already exposes generic `invoke`/`on`/`send`, so no preload change is needed.
 
-**Transport.** MCP Streamable HTTP on `127.0.0.1` with a configurable port and a bearer key WowUp generates when the
-switch is first turned on. The MCP protocol layer is written by hand in our files (initialize, tools/list, tools/call,
+**Transport.** MCP Streamable HTTP on `127.0.0.1` with a configurable port, no key. The server binds to loopback only and
+rejects any request with a foreign `Origin` header with 403 (the MCP spec's guard against web pages), the same
+switch + local address + Origin check that other local MCP servers (Figma's desktop app, JetBrains IDEs) use; a key in
+WowUp's plain-JSON settings file would protect nothing against local programs. Any `Authorization` header is ignored. The MCP protocol layer is written by hand in our files (initialize, tools/list, tools/call,
 ping; JSON-RPC 2.0), not taken from the MCP SDK, so `package.json` and the lockfile stay untouched. A `tools/call`
 answers as an SSE stream (`text/event-stream`) whenever the client accepts it: progress notifications every ~10 s
 while the tool runs (with the client's `progressToken` when it sent one), then the result. Clients built on the MCP
@@ -76,9 +76,8 @@ TypeScript SDK reset their 60-second request timeout on progress, so a full upda
 times out. Plain JSON responses otherwise.
 
 **Switch and setup.** Options → Addons (where the fork already added the CurseForge key field) gets one block: the
-on/off switch, the address, the key with a regenerate button, and "copy setup" for Claude Code (a
-`claude mcp add --transport http …` line), for Claude Desktop (an `mcp-remote` entry for its config file, the key in
-its `env`) and for a generic JSON MCP config (`url` + `headers`, as Cursor and most others take). Turning it on or
+on/off switch, the address, and "copy setup" for Claude Code (a
+`claude mcp add --transport http …` line), for Claude Desktop (an `mcp-remote` entry for its config file) and for a generic JSON MCP config (just the `url`, as Cursor and most others take). Turning it on or
 off applies at once; no restart.
 
 **Files.** Everything new lives under `wowup-electron/app/mirror/agent/` (main) and

@@ -1,4 +1,3 @@
-import { timingSafeEqual } from "crypto";
 import * as http from "http";
 import { AddressInfo } from "net";
 
@@ -17,15 +16,6 @@ export interface McpHttpServerOptions {
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-
-function keyMatches(header: string | undefined, key: string): boolean {
-  if (!header || !header.startsWith("Bearer ") || key.trim() === "") {
-    return false;
-  }
-  const given = Buffer.from(header.slice("Bearer ".length));
-  const expected = Buffer.from(key);
-  return given.length === expected.length && timingSafeEqual(given, expected);
 }
 
 function readBody(req: http.IncomingMessage): Promise<string> {
@@ -74,21 +64,12 @@ export class McpHttpServer {
     return { ...this.current };
   }
 
-  public async start(config: { port: number; key: string }, callTool: CallTool): Promise<AgentStatus> {
+  public async start(config: { port: number }, callTool: CallTool): Promise<AgentStatus> {
     await this.stop();
 
     const requestedUrl = `http://${HOST}:${config.port}${MCP_PATH}`;
-    if (typeof config.key !== "string" || config.key.trim() === "") {
-      // Every request would have to match an empty key; never listen like that
-      this.current = {
-        listening: false,
-        url: requestedUrl,
-        error: "No agent key is set; turn agent control off and on to make one.",
-      };
-      return this.status;
-    }
     const server = http.createServer((req, res) => {
-      this.handleRequest(req, res, config.key, callTool).catch((e) => {
+      this.handleRequest(req, res, callTool).catch((e) => {
         if (!res.headersSent) {
           sendJson(res, 500, { jsonrpc: "2.0", id: null, error: { code: -32603, message: String(e) } });
         } else {
@@ -139,7 +120,6 @@ export class McpHttpServer {
   private async handleRequest(
     req: http.IncomingMessage,
     res: http.ServerResponse,
-    key: string,
     callTool: CallTool,
   ): Promise<void> {
     const path = (req.url ?? "").split("?")[0];
@@ -154,10 +134,6 @@ export class McpHttpServer {
     const origin = req.headers.origin;
     if (origin !== undefined && origin !== "null" && !ORIGIN_PATTERN.test(origin)) {
       sendText(res, 403, "Forbidden origin");
-      return;
-    }
-    if (!keyMatches(req.headers.authorization, key)) {
-      sendText(res, 401, "Unauthorized", { "WWW-Authenticate": "Bearer" });
       return;
     }
 

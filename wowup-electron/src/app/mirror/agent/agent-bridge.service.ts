@@ -32,10 +32,8 @@ import { WowUpService } from "../../services/wowup/wowup.service";
 import { AgentBackupService } from "./agent-backup.service";
 import {
   agentSandboxPath,
-  newAgentKey,
   PREF_AGENT_ENABLED,
   PREF_AGENT_PORT,
-  SENSITIVE_AGENT_KEY,
 } from "./agent-settings";
 import { AgentToolContext, AgentToolHandler, AgentToolSet } from "./agent-tool";
 import { ChangeProvider, createChangeTools } from "./tools/change.tools";
@@ -175,12 +173,7 @@ export class AgentBridgeService {
   public async getConfig(): Promise<AgentConfig> {
     const enabled = await this._preferenceStorage.getBool(PREF_AGENT_ENABLED);
     const port = Number(await this._preferenceStorage.getAsync(PREF_AGENT_PORT));
-    let key = await this._sensitiveStorage.getAsync(SENSITIVE_AGENT_KEY);
-    if (enabled && !key) {
-      key = newAgentKey();
-      await this._sensitiveStorage.setAsync(SENSITIVE_AGENT_KEY, key);
-    }
-    return { enabled, port: Number.isInteger(port) && port > 0 ? port : AGENT_DEFAULT_PORT, key: key ?? "" };
+    return { enabled, port: Number.isInteger(port) && port > 0 ? port : AGENT_DEFAULT_PORT };
   }
 
   public async setEnabled(enabled: boolean): Promise<AgentStatus> {
@@ -190,11 +183,6 @@ export class AgentBridgeService {
 
   public async setPort(port: number): Promise<AgentStatus> {
     await this._preferenceStorage.setAsync(PREF_AGENT_PORT, port.toString());
-    return this.configure(await this.getConfig());
-  }
-
-  public async regenerateKey(): Promise<AgentStatus> {
-    await this._sensitiveStorage.setAsync(SENSITIVE_AGENT_KEY, newAgentKey());
     return this.configure(await this.getConfig());
   }
 

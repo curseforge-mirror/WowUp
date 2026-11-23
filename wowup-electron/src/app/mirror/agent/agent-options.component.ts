@@ -54,21 +54,12 @@ const MAX_PORT = 65535;
       <div *ngIf="portError" class="error-text">{{ portError }}</div>
       <div class="setting row align-items-center">
         <div class="flex-grow-1">
-          <div>Key</div>
-          <small class="text-2">{{ showKey ? config.key : mask }}</small>
-        </div>
-        <button mat-button type="button" (click)="showKey = !showKey">{{ showKey ? "Hide" : "Show" }}</button>
-        <button mat-button type="button" (click)="copy(config.key)">Copy key</button>
-        <button mat-button type="button" (click)="onNewKey()">New key</button>
-      </div>
-      <div class="setting row align-items-center">
-        <div class="flex-grow-1">
           <div>Copy setup</div>
           <small *ngIf="copied" class="text-2">Copied</small>
         </div>
-        <button mat-button type="button" (click)="copy(setupCode(config.key))">Claude Code</button>
-        <button mat-button type="button" (click)="copy(setupDesktop(config.key))">Claude Desktop</button>
-        <button mat-button type="button" (click)="copy(setupGeneric(config.key))">Other apps</button>
+        <button mat-button type="button" (click)="copy(setupCode())">Claude Code</button>
+        <button mat-button type="button" (click)="copy(setupDesktop())">Claude Desktop</button>
+        <button mat-button type="button" (click)="copy(setupGeneric())">Other apps</button>
       </div>
     </ng-container>
   `,
@@ -77,13 +68,11 @@ export class AgentOptionsComponent implements OnInit, OnDestroy {
   private readonly _sub = new Subscription();
   private _copiedTimer?: ReturnType<typeof setTimeout>;
 
-  public config: AgentConfig = { enabled: false, port: 0, key: "" };
+  public config: AgentConfig = { enabled: false, port: 0 };
   public status: AgentStatus = { listening: false, url: "" };
   public port = 0;
   public portError = "";
-  public showKey = false;
   public copied = false;
-  public readonly mask = "••••••••••••••••";
 
   public constructor(
     private _bridge: AgentBridgeService,
@@ -124,11 +113,6 @@ export class AgentOptionsComponent implements OnInit, OnDestroy {
     await this.refresh();
   }
 
-  public async onNewKey(): Promise<void> {
-    await this._bridge.regenerateKey();
-    await this.refresh();
-  }
-
   public copy(text: string): void {
     this._clipboard.copy(text);
     this.copied = true;
@@ -139,16 +123,16 @@ export class AgentOptionsComponent implements OnInit, OnDestroy {
     }, 2000);
   }
 
-  public setupCode(key: string): string {
-    return claudeCodeCommand(this.status.url, key);
+  public setupCode(): string {
+    return claudeCodeCommand(this.status.url);
   }
 
-  public setupDesktop(key: string): string {
-    return claudeDesktopConfig(this.status.url, key);
+  public setupDesktop(): string {
+    return claudeDesktopConfig(this.status.url);
   }
 
-  public setupGeneric(key: string): string {
-    return genericConfig(this.status.url, key);
+  public setupGeneric(): string {
+    return genericConfig(this.status.url);
   }
 
   private async refresh(): Promise<void> {

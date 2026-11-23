@@ -8,7 +8,6 @@ export const AGENT_DEFAULT_PORT = 17483;
 export interface AgentConfig {
   enabled: boolean;
   port: number;
-  key: string;
 }
 
 export interface AgentStatus {

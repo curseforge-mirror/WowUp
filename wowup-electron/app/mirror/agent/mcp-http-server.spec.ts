@@ -4,19 +4,10 @@ import { AddressInfo } from "net";
 
 import { McpHttpServer } from "./mcp-http-server";
 
-const KEY = "secret-key";
 const rpc = (method: string, params?: unknown, id: number | undefined = 1) => ({ jsonrpc: "2.0", id, method, params });
 
-function post(
-  port: number,
-  body: unknown,
-  headers: Record<string, string> = {},
-  key: string | null = KEY,
-): Promise<Response> {
+function post(port: number, body: unknown, headers: Record<string, string> = {}): Promise<Response> {
   const h: Record<string, string> = { "Content-Type": "application/json", ...headers };
-  if (key !== null) {
-    h.Authorization = `Bearer ${key}`;
-  }
   return fetch(`http://127.0.0.1:${port}/mcp`, { method: "POST", headers: h, body: JSON.stringify(body) });
 }
 
@@ -53,29 +44,16 @@ describe("McpHttpServer", () => {
     await Promise.all(servers.splice(0).map((s) => s.stop()));
   });
 
-  it("rejects a missing key with 401", async () => {
+  it("ignores any Authorization header", async () => {
     const s = make();
-    await s.start({ port: 0, key: KEY }, slowTool);
-    const res = await post(portOf(s), rpc("ping"), {}, null);
-    expect(res.status).to.equal(401);
-    const wrong = await post(portOf(s), rpc("ping"), {}, "nope");
-    expect(wrong.status).to.equal(401);
-  });
-
-  it("refuses to start without a key", async () => {
-    const s = make();
-    const status = await s.start({ port: 0, key: "" }, slowTool);
-    expect(status.listening).to.equal(false);
-    expect(status.error).to.match(/key/i);
-    expect(s.status.listening).to.equal(false);
-
-    const blank = await s.start({ port: 0, key: "   " }, slowTool);
-    expect(blank.listening).to.equal(false);
+    await s.start({ port: 0 }, slowTool);
+    expect((await post(portOf(s), rpc("ping"))).status).to.equal(200);
+    expect((await post(portOf(s), rpc("ping"), { Authorization: "Basic bm9wZQ==" })).status).to.equal(200);
   });
 
   it("rejects a foreign Origin with 403", async () => {
     const s = make();
-    await s.start({ port: 0, key: KEY }, slowTool);
+    await s.start({ port: 0 }, slowTool);
     expect((await post(portOf(s), rpc("ping"), { Origin: "http://evil.example" })).status).to.equal(403);
     expect((await post(portOf(s), rpc("ping"), { Origin: "http://localhost:3000" })).status).to.equal(200);
     expect((await post(portOf(s), rpc("ping"), { Origin: "null" })).status).to.equal(200);
@@ -83,19 +61,18 @@ describe("McpHttpServer", () => {
 
   it("answers GET with 405 and other paths with 404", async () => {
     const s = make();
-    await s.start({ port: 0, key: KEY }, slowTool);
-    const get = await fetch(`http://127.0.0.1:${portOf(s)}/mcp`, { headers: { Authorization: `Bearer ${KEY}` } });
+    await s.start({ port: 0 }, slowTool);
+    const get = await fetch(`http://127.0.0.1:${portOf(s)}/mcp`);
     expect(get.status).to.equal(405);
     const other = await fetch(`http://127.0.0.1:${portOf(s)}/other`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${KEY}` },
     });
     expect(other.status).to.equal(404);
   });
 
   it("answers initialize as JSON", async () => {
     const s = make();
-    await s.start({ port: 0, key: KEY }, slowTool);
+    await s.start({ port: 0 }, slowTool);
     const res = await post(portOf(s), rpc("initialize", { protocolVersion: "2025-06-18" }), {
       Accept: "application/json, text/event-stream",
     });
@@ -107,14 +84,14 @@ describe("McpHttpServer", () => {
 
   it("answers a batch with -32600", async () => {
     const s = make();
-    await s.start({ port: 0, key: KEY }, slowTool);
+    await s.start({ port: 0 }, slowTool);
     const body: any = await (await post(portOf(s), [rpc("ping")])).json();
     expect(body.error.code).to.equal(-32600);
   });
 
   it("streams progress then the result over SSE", async () => {
     const s = make(20);
-    await s.start({ port: 0, key: KEY }, slowTool);
+    await s.start({ port: 0 }, slowTool);
     const res = await post(
       portOf(s),
       rpc("tools/call", { name: "list_installations", arguments: {}, _meta: { progressToken: "t1" } }),
@@ -135,7 +112,7 @@ describe("McpHttpServer", () => {
 
   it("sends keep-alive comments instead of progress without a token", async () => {
     const s = make(20);
-    await s.start({ port: 0, key: KEY }, slowTool);
+    await s.start({ port: 0 }, slowTool);
     const res = await post(portOf(s), rpc("tools/call", { name: "list_installations", arguments: {} }), {
       Accept: "text/event-stream",
     });
@@ -147,7 +124,7 @@ describe("McpHttpServer", () => {
 
   it("answers tools/call as JSON without an SSE Accept", async () => {
     const s = make(20);
-    await s.start({ port: 0, key: KEY }, slowTool);
+    await s.start({ port: 0 }, slowTool);
     const res = await post(portOf(s), rpc("tools/call", { name: "list_installations", arguments: {} }));
     expect(res.headers.get("content-type")).to.contain("application/json");
     expect((await res.json()).result.content[0].text).to.equal("done");
@@ -155,7 +132,7 @@ describe("McpHttpServer", () => {
 
   it("answers notifications with 202", async () => {
     const s = make();
-    await s.start({ port: 0, key: KEY }, slowTool);
+    await s.start({ port: 0 }, slowTool);
     const res = await post(portOf(s), rpc("notifications/initialized", undefined, undefined));
     expect(res.status).to.equal(202);
   });
@@ -166,11 +143,11 @@ describe("McpHttpServer", () => {
     const busy = (blocker.address() as AddressInfo).port;
     try {
       const s = make();
-      const failed = await s.start({ port: busy, key: KEY }, slowTool);
+      const failed = await s.start({ port: busy }, slowTool);
       expect(failed.listening).to.equal(false);
       expect(failed.error).to.contain("EADDRINUSE");
       expect(failed.url).to.equal(`http://127.0.0.1:${busy}/mcp`);
-      const ok = await s.start({ port: 0, key: KEY }, slowTool);
+      const ok = await s.start({ port: 0 }, slowTool);
       expect(ok.listening).to.equal(true);
       expect(ok.url).to.match(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
       expect((await post(portOf(s), rpc("ping"))).status).to.equal(200);
@@ -181,16 +158,15 @@ describe("McpHttpServer", () => {
 
   it("start while running restarts on the new config", async () => {
     const s = make();
-    await s.start({ port: 0, key: "one" }, slowTool);
-    await s.start({ port: 0, key: "two" }, slowTool);
-    expect((await post(portOf(s), rpc("ping"), {}, "one")).status).to.equal(401);
-    expect((await post(portOf(s), rpc("ping"), {}, "two")).status).to.equal(200);
+    await s.start({ port: 0 }, slowTool);
+    await s.start({ port: 0 }, slowTool);
+    expect((await post(portOf(s), rpc("ping"))).status).to.equal(200);
     expect(s.status.listening).to.equal(true);
   });
 
   it("stop closes the port", async () => {
     const s = make();
-    await s.start({ port: 0, key: KEY }, slowTool);
+    await s.start({ port: 0 }, slowTool);
     const port = portOf(s);
     await s.stop();
     expect(s.status.listening).to.equal(false);

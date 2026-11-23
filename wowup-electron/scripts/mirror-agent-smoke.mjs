@@ -1,22 +1,22 @@
 // Smoke test client for WowUp's agent control (MCP over streamable HTTP), with no dependencies.
 // Runs initialize, notifications/initialized and tools/list, then optionally one tools/call.
 //
-//   node scripts/mirror-agent-smoke.mjs <url> <key> [toolName] [jsonArgs | @args.json]
+//   node scripts/mirror-agent-smoke.mjs <url> [toolName] [jsonArgs | @args.json]
 //
-//   node scripts/mirror-agent-smoke.mjs http://127.0.0.1:17483/mcp <key>
-//   node scripts/mirror-agent-smoke.mjs http://127.0.0.1:17483/mcp <key> search_addons '{"query":"tiptac"}'
+//   node scripts/mirror-agent-smoke.mjs http://127.0.0.1:17483/mcp
+//   node scripts/mirror-agent-smoke.mjs http://127.0.0.1:17483/mcp search_addons '{"query":"tiptac"}'
 //
-// The url and key are shown in Options -> Addons -> Let AI agents control WowUp (MCP). Tool calls ask for an
+// The url is shown in Options -> Addons -> Let AI agents control WowUp (MCP). Tool calls ask for an
 // SSE stream and send a progress token, so progress messages print as they arrive. Exits 1 on any failure,
 // including a tool result with isError: true.
 
 import { readFileSync } from "node:fs";
 
 const PROTOCOL_VERSION = "2025-06-18";
-const [url, key, toolName, rawArgs] = process.argv.slice(2);
+const [url, toolName, rawArgs] = process.argv.slice(2);
 
-if (!url || !key) {
-  console.error("Usage: node scripts/mirror-agent-smoke.mjs <url> <key> [toolName] [jsonArgs | @args.json]");
+if (!url) {
+  console.error("Usage: node scripts/mirror-agent-smoke.mjs <url> [toolName] [jsonArgs | @args.json]");
   process.exit(2);
 }
 
@@ -40,7 +40,6 @@ function headers() {
   const h = {
     "Content-Type": "application/json",
     Accept: "application/json, text/event-stream",
-    Authorization: `Bearer ${key}`,
   };
   if (sessionId) {
     h["Mcp-Session-Id"] = sessionId;

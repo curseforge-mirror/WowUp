@@ -182,11 +182,10 @@ describe("AgentBridgeService", () => {
     expect(JSON.parse(sent(AGENT_CHANNEL_RESULT)[0][1].result.text)).toEqual({ backups: [] });
   });
 
-  it("initialize configures main even when disabled, and enabling generates a key", async () => {
+  it("initialize configures main even when disabled, and enabling uses the default port", async () => {
     expect(electron.invoke).toHaveBeenCalledWith(AGENT_CHANNEL_CONFIGURE, jasmine.objectContaining({ enabled: false }));
     expect(electron.on).toHaveBeenCalledWith(AGENT_CHANNEL_CALL, jasmine.any(Function));
     await service.setEnabled(true);
-    expect(secrets["mirror_agent_key"].length).toBeGreaterThan(30);
     const last = electron.invoke.calls.mostRecent().args[1];
     expect(last.enabled).toBeTrue();
     expect(last.port).toBe(17483);
