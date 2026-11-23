@@ -5,9 +5,11 @@ name: Mirror release (Windows)
 # stay conflict-free: upstream's MAJOR.MINOR, and PATCH = upstream patch * 1000 + this workflow's run number
 # (2.25.4 -> 2.25.4002, 2.25.4003, ...). It only ever goes up, also across upstream bumps. Keep this file's name:
 # renaming it restarts the run number.
+# The beta branch (upstream's beta plus our own work in progress) publishes the same way, but as a GitHub
+# pre-release: installs on WowUp's Beta update channel take it, Stable ones only ever see mirror's releases.
 on:
   push:
-    branches: [mirror]
+    branches: [mirror, beta]
   workflow_dispatch:
 
 permissions:
@@ -46,7 +48,8 @@ jobs:
           node -e "const fs = require('fs'), f = 'wowup-electron/package.json', p = JSON.parse(fs.readFileSync(f, 'utf8'));
             p.version = process.argv[1]; fs.writeFileSync(f, JSON.stringify(p, null, 2) + '\n');" "$version"
           echo "VERSION=$version" >> "$GITHUB_ENV"
-          echo "Building $version (upstream $base, run $GITHUB_RUN_NUMBER)"
+          if [ "$GITHUB_REF_NAME" = beta ]; then echo "PRERELEASE=true" >> "$GITHUB_ENV"; else echo "PRERELEASE=false" >> "$GITHUB_ENV"; fi
+          echo "Building $version (upstream $base, run $GITHUB_RUN_NUMBER, branch $GITHUB_REF_NAME)"
 
       # electron-builder uploads the installers in parallel, and each upload creates the release when it can't see
       # one yet (the first manual run left two drafts). A draft made here first is the one every upload finds.
@@ -57,7 +60,7 @@ jobs:
             echo "release v$VERSION already exists: $existing"
           else
             gh api "repos/$GITHUB_REPOSITORY/releases" -f tag_name="v$VERSION" -f target_commitish="$GITHUB_SHA" \
-              -f name="$VERSION" -F draft=true -F generate_release_notes=true --jq '"created draft \(.id) for \(.tag_name)"'
+              -f name="$VERSION" -F draft=true -F prerelease="$PRERELEASE" -F generate_release_notes=true --jq '"created draft \(.id) for \(.tag_name)"'
           fi
 
       - name: Build and upload
@@ -79,5 +82,6 @@ jobs:
             *latest.yml*) ;;
             *) echo "release v$VERSION has no latest.yml (assets: $assets); not publishing"; exit 1 ;;
           esac
-          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$id" -F draft=false -f make_latest=true \
+          if [ "$PRERELEASE" = true ]; then latest=false; else latest=true; fi
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$id" -F draft=false -F prerelease="$PRERELEASE" -f make_latest="$latest" \
             --jq '"published \(.tag_name): \(.html_url)"'

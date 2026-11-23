@@ -48,6 +48,11 @@ MAJOR.MINOR, with PATCH = upstream patch × 1000 + the workflow's run number (2.
 always increases, across upstream bumps too. Don't rename the workflow file: that restarts the run number. The
 installers are unsigned (no code-signing certificate), so Windows SmartScreen warns on a first install.
 
+Pushes to `beta` build the same way but publish a GitHub **pre-release**. `beta` is upstream's beta (`develop`)
+merged with `mirror`, plus our own work in progress. Installs on WowUp's Beta update channel (Options) take it;
+Stable installs only ever see `mirror`'s releases. After each stable release, merge `mirror` into `beta` so beta
+never falls behind.
+
 People who install the fork bring their own keys, in **Options → Addons**: a CurseForge API key from
 [console.curseforge.com](https://console.curseforge.com/), and optionally a Wago access key (Wago Patreon). Each
 provider stays off until it has a key.
