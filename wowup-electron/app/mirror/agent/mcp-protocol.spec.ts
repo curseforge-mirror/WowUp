@@ -82,4 +82,25 @@ describe("mcp-protocol", () => {
     expect((await handleMcpMessage("garbage", noTool))?.error?.code).to.equal(-32600);
     expect((await handleMcpMessage(null, noTool))?.error?.code).to.equal(-32600);
   });
+
+  it("tools that change an installed addon take addonId or a provider and externalId", async () => {
+    const tool = (name: string) =>
+      AGENT_TOOLS.find((t) => t.name === name) as unknown as {
+        inputSchema: { required?: string[]; properties: object };
+      };
+    for (const name of ["remove_addon", "set_auto_update", "set_ignored"]) {
+      const schema = tool(name).inputSchema;
+      expect(schema.required ?? [], name).to.not.include("addonId");
+      expect(Object.keys(schema.properties), name).to.include.members(["addonId", "provider", "externalId"]);
+    }
+    for (const name of ["replace_addon", "switch_provider"]) {
+      const schema = tool(name).inputSchema;
+      expect(schema.required ?? [], name).to.not.include("addonId");
+      expect(Object.keys(schema.properties), name).to.include.members([
+        "addonId",
+        "installedProvider",
+        "installedExternalId",
+      ]);
+    }
+  });
 });

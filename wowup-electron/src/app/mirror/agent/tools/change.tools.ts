@@ -267,13 +267,27 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
     return provider;
   };
 
-  const installedAddon = (args: Record<string, unknown>, installed: Addon[]): Addon => {
+  /**
+   * The installed addon a change names: its addonId, or its provider and externalId. Tools whose provider and
+   * externalId name the addon to switch to or install instead take installedProvider and installedExternalId.
+   */
+  const installedAddon = (
+    args: Record<string, unknown>,
+    installed: Addon[],
+    keys: { provider: string; externalId: string } = { provider: "provider", externalId: "externalId" },
+  ): Addon => {
     const addonId = str(args, "addonId");
-    if (!addonId) {
-      throw new Error("Pass addonId (from list_addons).");
+    if (addonId) {
+      return resolveAddon({ addonId }, installed);
     }
-    return resolveAddon({ addonId }, installed);
+    const provider = str(args, keys.provider);
+    const externalId = str(args, keys.externalId);
+    if (provider && externalId) {
+      return resolveAddon({ provider: canonicalProvider(provider), externalId }, installed);
+    }
+    throw new Error(`Pass addonId (from list_addons), or ${keys.provider} and ${keys.externalId}.`);
   };
+  const INSTALLED_KEYS = { provider: "installedProvider", externalId: "installedExternalId" };
 
   /** The backup before a change, taken once no sync of WowUp's can rewrite the records it holds */
   const takeBackup = async (
@@ -772,7 +786,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
     replace_addon: async (args, ctx) => {
       const installation = await resolveInstall(args);
       const installed = await recordsOf(installation);
-      const old = installedAddon(args, installed);
+      const old = installedAddon(args, installed, INSTALLED_KEYS);
       const providerArg = str(args, "provider");
       const externalId = str(args, "externalId");
       if (!providerArg || !externalId) {
@@ -831,7 +845,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
     switch_provider: async (args, ctx) => {
       const installation = await resolveInstall(args);
       const installed = await recordsOf(installation);
-      const addon = installedAddon(args, installed);
+      const addon = installedAddon(args, installed, INSTALLED_KEYS);
       const providerArg = str(args, "provider");
       if (!providerArg) {
         throw new Error("Pass provider, one the addon is known on (see get_addon_details).");

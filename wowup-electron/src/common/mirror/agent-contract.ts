@@ -55,6 +55,8 @@ const INSTALLATION = str(
   "Installation id or name (see list_installations). Optional when WowUp has only one installation or a clear default.",
 );
 const ADDON_ID = str("Id of an installed addon, as returned by list_addons.");
+const INSTALLED_PROVIDER = str("Instead of addonId: the installed addon's provider (with installedExternalId).");
+const INSTALLED_EXTERNAL_ID = str("Instead of addonId: the installed addon's id at its provider.");
 const PROVIDER = str("Addon provider name, e.g. Curse, GitHub, WowUpHub, Wago, Tukui, WowInterface, RaiderIO.");
 const EXTERNAL_ID = str("The addon's id at the provider (as returned by search_addons or get_addon_details).");
 const VERSION = str("A version or file id from list_versions. Omit for the latest.");
@@ -257,60 +259,85 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: "remove_addon",
-    description: "Uninstall an installed addon and delete its folders." + CHANGE_NOTE,
-    inputSchema: schema({ addonId: ADDON_ID, installation: INSTALLATION, preview: PREVIEW }, ["addonId"]),
+    description:
+      "Uninstall an installed addon and delete its folders. Give addonId, or provider and externalId." + CHANGE_NOTE,
+    inputSchema: schema({
+      addonId: ADDON_ID,
+      provider: PROVIDER,
+      externalId: EXTERNAL_ID,
+      installation: INSTALLATION,
+      preview: PREVIEW,
+    }),
   },
   {
     name: "replace_addon",
     description:
-      "Replace an installed addon with another addon or release (removes the old one, installs the new one). Preview reports whether settings carry over (same folders) or not." +
+      "Replace an installed addon (addonId, or installedProvider and installedExternalId) with another addon or release, given by provider and externalId (removes the old one, installs the new one). Preview reports whether settings carry over (same folders) or not." +
+      CHANGE_NOTE,
+    inputSchema: schema(
+      {
+        addonId: ADDON_ID,
+        installedProvider: INSTALLED_PROVIDER,
+        installedExternalId: INSTALLED_EXTERNAL_ID,
+        provider: str("Provider of the addon to install instead."),
+        externalId: str(
+          "Id at that provider of the addon to install instead (from search_addons or get_addon_details).",
+        ),
+        version: VERSION,
+        installation: INSTALLATION,
+        preview: PREVIEW,
+      },
+      ["provider", "externalId"],
+    ),
+  },
+  {
+    name: "switch_provider",
+    description:
+      "Move an installed addon (addonId, or installedProvider and installedExternalId) to another provider it is already known on (uses its recorded externalIds)." +
+      CHANGE_NOTE,
+    inputSchema: schema(
+      {
+        addonId: ADDON_ID,
+        installedProvider: INSTALLED_PROVIDER,
+        installedExternalId: INSTALLED_EXTERNAL_ID,
+        provider: str("The provider to move it to, one it is known on (see get_addon_details)."),
+        installation: INSTALLATION,
+        preview: PREVIEW,
+      },
+      ["provider"],
+    ),
+  },
+  {
+    name: "set_auto_update",
+    description:
+      "Turn auto-update on or off for an installed addon. Give addonId, or provider and externalId." + CHANGE_NOTE,
+    inputSchema: schema(
+      {
+        addonId: ADDON_ID,
+        provider: PROVIDER,
+        externalId: EXTERNAL_ID,
+        enabled: bool("Auto-update on (true) or off (false)."),
+        installation: INSTALLATION,
+        preview: PREVIEW,
+      },
+      ["enabled"],
+    ),
+  },
+  {
+    name: "set_ignored",
+    description:
+      "Mark an installed addon as ignored (never updated) or not. Give addonId, or provider and externalId." +
       CHANGE_NOTE,
     inputSchema: schema(
       {
         addonId: ADDON_ID,
         provider: PROVIDER,
         externalId: EXTERNAL_ID,
-        version: VERSION,
-        installation: INSTALLATION,
-        preview: PREVIEW,
-      },
-      ["addonId", "provider", "externalId"],
-    ),
-  },
-  {
-    name: "switch_provider",
-    description:
-      "Move an installed addon to another provider it is already known on (uses its recorded externalIds)." +
-      CHANGE_NOTE,
-    inputSchema: schema({ addonId: ADDON_ID, provider: PROVIDER, installation: INSTALLATION, preview: PREVIEW }, [
-      "addonId",
-      "provider",
-    ]),
-  },
-  {
-    name: "set_auto_update",
-    description: "Turn auto-update on or off for an installed addon." + CHANGE_NOTE,
-    inputSchema: schema(
-      {
-        addonId: ADDON_ID,
-        enabled: bool("Auto-update on (true) or off (false)."),
-        installation: INSTALLATION,
-        preview: PREVIEW,
-      },
-      ["addonId", "enabled"],
-    ),
-  },
-  {
-    name: "set_ignored",
-    description: "Mark an installed addon as ignored (never updated) or not." + CHANGE_NOTE,
-    inputSchema: schema(
-      {
-        addonId: ADDON_ID,
         ignored: bool("Ignored (true) or not (false)."),
         installation: INSTALLATION,
         preview: PREVIEW,
       },
-      ["addonId", "ignored"],
+      ["ignored"],
     ),
   },
   {

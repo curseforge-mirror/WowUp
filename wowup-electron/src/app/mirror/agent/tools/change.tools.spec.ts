@@ -1015,4 +1015,65 @@ describe("change tools", () => {
     await u.tools.update_addons({ addonIds: ["a1"] }, u.ctx);
     expect(u.backupService.create.calls.mostRecent().args[5]).toBeUndefined();
   });
+
+  it("remove_addon, set_auto_update and set_ignored name the addon by addonId or provider and externalId", async () => {
+    const records = [
+      rec({ id: "a1", name: "Alpha", providerName: "Curse", externalId: "1" }),
+      rec({ id: "a2", name: "Beta", providerName: "Wago", externalId: "w2", installedFolderList: ["Beta"] }),
+    ];
+    const removed = make({ records });
+    const out: any = await removed.tools.remove_addon({ provider: "wago", externalId: "w2" }, removed.ctx);
+    expect(removed.addonService.removeAddon).toHaveBeenCalledOnceWith(
+      jasmine.objectContaining({ id: "a2" }),
+      false,
+      true,
+    );
+    expect(out.changed[0].addonId).toBe("a2");
+
+    const auto = make({ records });
+    await auto.tools.set_auto_update({ provider: "curseforge", externalId: "1", enabled: false }, auto.ctx);
+    expect(auto.records().find((r) => r.id === "a1").autoUpdateEnabled).toBeFalse();
+
+    const ignored = make({ records });
+    await ignored.tools.set_ignored({ provider: "Wago", externalId: "w2", ignored: true, preview: true }, ignored.ctx);
+    await expectAsync(ignored.tools.set_ignored({ ignored: true }, ignored.ctx)).toBeRejectedWithError(
+      /addonId.*provider and externalId/,
+    );
+    await expectAsync(
+      ignored.tools.remove_addon({ provider: "Wago", externalId: "nope" }, ignored.ctx),
+    ).toBeRejectedWithError(/No installed addon from Wago/);
+  });
+
+  it("replace_addon and switch_provider name the installed addon by addonId or installedProvider and installedExternalId", async () => {
+    const old = rec({
+      id: "a1",
+      name: "A",
+      providerName: "Curse",
+      externalId: "1",
+      installedFolderList: ["A"],
+      externalIds: [{ providerName: "Wago", id: "w1" }],
+    });
+    const r = make({
+      records: [old],
+      result: searchResult({ name: "B", externalId: "77", files: [file({ folders: ["B"] })] }),
+    });
+    const preview: any = await r.tools.replace_addon(
+      { installedProvider: "Curse", installedExternalId: "1", provider: "Curse", externalId: "77", preview: true },
+      r.ctx,
+    );
+    expect(preview.remove[0].name).toBe("A");
+
+    const s = make({ records: [old] });
+    await s.tools.switch_provider({ installedProvider: "curse", installedExternalId: "1", provider: "Wago" }, s.ctx);
+    expect(s.addonService.setProvider).toHaveBeenCalledOnceWith(
+      jasmine.objectContaining({ id: "a1" }),
+      "w1",
+      "Wago",
+      INSTALL,
+    );
+
+    await expectAsync(s.tools.switch_provider({ provider: "Wago" }, s.ctx)).toBeRejectedWithError(
+      /addonId.*installedProvider and installedExternalId/,
+    );
+  });
 });
