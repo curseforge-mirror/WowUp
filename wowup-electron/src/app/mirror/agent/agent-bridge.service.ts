@@ -26,6 +26,7 @@ import { SensitiveStorageService } from "../../services/storage/sensitive-storag
 import { WtfService } from "../../services/wtf/wtf.service";
 import { WarcraftInstallationService } from "../../services/warcraft/warcraft-installation.service";
 import { WowUpService } from "../../services/wowup/wowup.service";
+import { AgentBackupService } from "./agent-backup.service";
 import {
   agentSandboxPath,
   newAgentKey,
@@ -37,6 +38,7 @@ import { AgentToolHandler, AgentToolSet } from "./agent-tool";
 import { createDiscoveryTools, DiscoveryProvider } from "./tools/discovery.tools";
 import { createHealthTools } from "./tools/health.tools";
 import { createInspectTools, InspectProvider } from "./tools/inspect.tools";
+import { createRecoveryTools } from "./tools/recovery.tools";
 
 @Injectable({
   providedIn: "root",
@@ -60,6 +62,7 @@ export class AgentBridgeService {
     private _sessionService: SessionService,
     private _downloadService: DownloadService,
     private _wtfService: WtfService,
+    private _backupService: AgentBackupService,
   ) {}
 
   public registerTools(tools: AgentToolSet): void {
@@ -100,6 +103,8 @@ export class AgentBridgeService {
       }),
     );
 
+    this.registerTools(createRecoveryTools({ backupService: this._backupService }));
+
     if (!this._listening) {
       this._listening = true;
       this._electronService.on(AGENT_CHANNEL_CALL, (_evt, req: AgentCallRequest) => {
@@ -111,6 +116,12 @@ export class AgentBridgeService {
       await this._fileService.removeAll(agentSandboxPath(this._wowUpService.applicationFolderPath));
     } catch (e) {
       console.error("Agent sandbox cleanup failed", e);
+    }
+
+    try {
+      await this._backupService.prune();
+    } catch (e) {
+      console.error("Agent backup prune failed", e);
     }
 
     try {

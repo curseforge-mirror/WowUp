@@ -18,6 +18,7 @@ import { AddonProviderFactory } from "../../services/addons/addon.provider.facto
 import { AddonService } from "../../services/addons/addon.service";
 import { SessionService } from "../../services/session/session.service";
 import { WarcraftInstallationService } from "../../services/warcraft/warcraft-installation.service";
+import { AgentBackupService } from "./agent-backup.service";
 import { AgentBridgeService } from "./agent-bridge.service";
 
 describe("AgentBridgeService", () => {
@@ -26,6 +27,7 @@ describe("AgentBridgeService", () => {
   let listener: (evt: unknown, req: unknown) => void;
   let prefs: Record<string, string>;
   let secrets: Record<string, string>;
+  let backups: { prune: jasmine.Spy; list: jasmine.Spy; rollback: jasmine.Spy };
 
   const call = async (name: string, args: Record<string, unknown> = {}) => {
     listener({}, { callId: "c1", name, args });
@@ -36,6 +38,11 @@ describe("AgentBridgeService", () => {
   beforeEach(async () => {
     prefs = {};
     secrets = {};
+    backups = {
+      prune: jasmine.createSpy("prune").and.resolveTo(0),
+      list: jasmine.createSpy("list").and.resolveTo([]),
+      rollback: jasmine.createSpy("rollback"),
+    };
     electron = jasmine.createSpyObj<ElectronService>("ElectronService", ["invoke", "on", "send", "off"]);
     electron.invoke.and.resolveTo({ listening: true, url: "http://127.0.0.1:17483/mcp" });
     electron.on.and.callFake(((_c: string, l: any) => {
@@ -67,6 +74,7 @@ describe("AgentBridgeService", () => {
         { provide: SessionService, useValue: {} },
         { provide: DownloadService, useValue: {} },
         { provide: WtfService, useValue: {} },
+        { provide: AgentBackupService, useValue: backups },
       ],
     });
     service = TestBed.inject(AgentBridgeService);
@@ -108,6 +116,15 @@ describe("AgentBridgeService", () => {
     });
     await call("slow");
     expect(sent(AGENT_CHANNEL_PROGRESS)[0][1]).toEqual({ callId: "c1", message: "halfway" });
+  });
+
+  it("initialize prunes backups and survives a failed prune", async () => {
+    expect(backups.prune).toHaveBeenCalledTimes(1);
+    backups.prune.and.rejectWith(new Error("disk gone"));
+    await expectAsync(service.initialize()).toBeResolved();
+    expect(electron.invoke).toHaveBeenCalledWith(AGENT_CHANNEL_CONFIGURE, jasmine.anything());
+    await call("list_backups");
+    expect(JSON.parse(sent(AGENT_CHANNEL_RESULT)[0][1].result.text)).toEqual({ backups: [] });
   });
 
   it("initialize configures main even when disabled, and enabling generates a key", async () => {
