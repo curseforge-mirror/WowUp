@@ -1,4 +1,5 @@
 /* eslint-disable */
+import { Subject } from "rxjs";
 import { AddonChannelType, WowClientType } from "wowup-lib-core";
 
 import { createDiscoveryTools } from "./discovery.tools";
@@ -38,6 +39,7 @@ describe("discovery tools", () => {
       "getCategoryPage",
       "getFeaturedAddons",
     ]);
+    addonService.searchError$ = new Subject<any>();
     // getAddons rescans an installation that has no records; read tools must only read
     addonService.getAddons.and.rejectWith(new Error("getAddons rescans"));
     addonService.getAllAddons.and.resolveTo([]);
@@ -146,9 +148,10 @@ describe("discovery tools", () => {
     ]);
     const res: any = await tools.search_addons({ query: "found", installation: "i2", provider: "curse" }, ctx);
     expect(addonService.search).toHaveBeenCalledWith("found", installs[1]);
-    expect(res.length).toBe(1);
-    expect(res[0].externalId).toBe("9");
-    expect(res[0].latestVersion).toBe("1");
+    expect(res.results.length).toBe(1);
+    expect(res.results[0].externalId).toBe("9");
+    expect(res.results[0].latestVersion).toBe("1");
+    expect(res.providerErrors).toEqual([]);
   });
 
   it("get_addon_details includes per-file game versions", async () => {
@@ -196,7 +199,7 @@ describe("discovery tools", () => {
       /Valid categories:.*Combat/,
     );
     addonService.getCategoryPage.and.resolveTo([]);
-    await tools.browse_category({ category: "combat" }, ctx);
+    expect(await tools.browse_category({ category: "combat" }, ctx)).toEqual({ results: [] });
     expect(addonService.getCategoryPage.calls.mostRecent().args[0]).toBe(11);
   });
 
@@ -208,5 +211,34 @@ describe("discovery tools", () => {
     });
     await tools.list_versions({ provider: "Curse", externalId: "5" }, ctx);
     expect(getModFiles).toHaveBeenCalledWith({ modId: 5, pageSize: 50, gameVersionTypeId: 67408 });
+  });
+
+  it("search_addons names the providers whose search failed", async () => {
+    const { addonService, tools } = make();
+    addonService.search.and.callFake(async () => {
+      // AddonService.search logs a failed provider and reports it on searchError$, then leaves it out
+      addonService.searchError$.next({ message: "Wago", innerError: new Error("503 Service Unavailable") });
+      addonService.searchError$.next({ message: "Curse", innerError: new Error("timeout") });
+      return [{ name: "Found", providerName: "GitHub", externalId: "o/r", files: [] }];
+    });
+    const res: any = await tools.search_addons({ query: "x" }, ctx);
+    expect(res.results.map((r: any) => r.externalId)).toEqual(["o/r"]);
+    expect(res.providerErrors).toEqual([
+      { provider: "Wago", message: "503 Service Unavailable" },
+      { provider: "Curse", message: "timeout" },
+    ]);
+    const one: any = await tools.search_addons({ query: "x", provider: "wago" }, ctx);
+    expect(one.providerErrors).toEqual([{ provider: "Wago", message: "503 Service Unavailable" }]);
+    // an error after the search is not this search's
+    addonService.searchError$.next({ message: "Wago", innerError: new Error("later") });
+    expect(one.providerErrors.length).toBe(1);
+  });
+
+  it("browse_category says the listing has one page when asked for another", async () => {
+    const { addonService, tools } = make();
+    const res: any = await tools.browse_category({ category: "combat", page: 2 }, ctx);
+    expect(res.results).toEqual([]);
+    expect(res.note).toMatch(/single page.*page 1/);
+    expect(addonService.getCategoryPage).not.toHaveBeenCalled();
   });
 });

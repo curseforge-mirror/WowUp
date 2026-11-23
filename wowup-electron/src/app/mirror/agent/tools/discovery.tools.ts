@@ -36,6 +36,8 @@ export interface DiscoveryProvider {
 export interface DiscoveryDeps {
   addonService: {
     search(query: string, installation: WowInstallation): Promise<AddonSearchResult[]>;
+    /** A provider whose search failed (search leaves it out): the error's message is the provider's name */
+    searchError$: Observable<{ message: string; innerError?: Error }>;
     /** The stored records only; getAddons would rescan an installation that has none */
     getAllAddons(installation: WowInstallation): Promise<Addon[]>;
     getAddonByUrl(url: URL, installation: WowInstallation): Promise<SearchByUrlResult | undefined>;
@@ -251,8 +253,21 @@ export function createDiscoveryTools(deps: DiscoveryDeps): AgentToolSet {
       }
       const installation = await resolveInstall(args);
       const provider = str(args, "provider");
-      const results = (await addonService.search(query, installation)) ?? [];
-      return results.filter((r) => sameProvider(r.providerName, provider)).map(trimResult);
+      // search skips a provider that fails and only reports it here, so the agent hears of it too
+      const providerErrors: Array<{ provider: string; message: string }> = [];
+      const sub = addonService.searchError$.subscribe((e) =>
+        providerErrors.push({ provider: e.message, message: e.innerError?.message ?? "the search failed" }),
+      );
+      let results: AddonSearchResult[];
+      try {
+        results = (await addonService.search(query, installation)) ?? [];
+      } finally {
+        sub.unsubscribe();
+      }
+      return {
+        results: results.filter((r) => sameProvider(r.providerName, provider)).map(trimResult),
+        providerErrors: providerErrors.filter((e) => sameProvider(e.provider, provider)),
+      };
     },
 
     get_addon_details: async (args) => {
@@ -332,10 +347,13 @@ export function createDiscoveryTools(deps: DiscoveryDeps): AgentToolSet {
       const page = typeof args.page === "number" ? args.page : 1;
       // Providers return one page per call; there is no paging parameter to pass on.
       if (page > 1) {
-        return [];
+        return {
+          results: [],
+          note: "A category listing has a single page: page 1 holds every result the providers return.",
+        };
       }
       const results = (await addonService.getCategoryPage(category, installation)) ?? [];
-      return results.filter((r) => sameProvider(r.providerName, provider)).map(trimResult);
+      return { results: results.filter((r) => sameProvider(r.providerName, provider)).map(trimResult) };
     },
 
     featured_addons: async (args) => {

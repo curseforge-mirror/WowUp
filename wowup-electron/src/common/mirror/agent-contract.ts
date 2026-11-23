@@ -99,7 +99,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "search_addons",
     description:
-      "Search all enabled providers for addons compatible with an installation. Returns name, provider, externalId, latest version, downloads and author per result.",
+      "Search all enabled providers for addons compatible with an installation. Returns { results, providerErrors }: name, provider, externalId, latest version, downloads and author per result, and the providers whose search failed.",
     inputSchema: schema({ query: str("Search text."), installation: INSTALLATION, provider: PROVIDER }, ["query"]),
   },
   {
@@ -135,13 +135,13 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "browse_category",
     description:
-      "Browse a provider's category listing page (e.g. Curse categories). Returns addons with name, provider, externalId and latest version.",
+      "Browse a provider's category listing (e.g. Curse categories). Returns { results } with name, provider, externalId and latest version per addon; the listing has a single page.",
     inputSchema: schema(
       {
         category: str("Category name or id."),
         provider: PROVIDER,
         installation: INSTALLATION,
-        page: int("Page number, starting at 1."),
+        page: int("Page number; the listing has only page 1."),
       },
       ["category"],
     ),
