@@ -713,8 +713,9 @@ export class AgentBackupService {
       );
     } finally {
       if (restoredFolders.length + removedFolders.length + restoredRecords + removedRecords > 0) {
-        // My Addons reloads its list from storage on this
-        this._sessionService.notifyAddonsChanged();
+        // My Addons reloads its list from storage on this. notifyAddonsChanged would start a full update check,
+        // which writes back the records it read before this rollback.
+        this._sessionService.autoUpdateComplete();
       }
     }
 

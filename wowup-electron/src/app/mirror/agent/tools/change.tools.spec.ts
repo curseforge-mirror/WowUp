@@ -215,6 +215,9 @@ describe("change tools", () => {
       getDownloadAuth: async () => undefined,
     };
     const delay = jasmine.createSpy("delay").and.resolveTo(undefined);
+    const whenIdle = jasmine.createSpy("whenIdle").and.callFake(async () => {
+      log.push("idle");
+    });
     const deps = {
       applicationFolderPath: "C:/data",
       fileService,
@@ -233,6 +236,7 @@ describe("change tools", () => {
       listAddonFolders: async () => opts.disk ?? [],
       encodeBase64: async (text: string) => `b64(${text})`,
       getSecret: async () => undefined,
+      whenIdle,
     };
     const ctx = { progress: jasmine.createSpy("progress") };
     return {
@@ -245,6 +249,7 @@ describe("change tools", () => {
       downloadService,
       delay,
       downloads,
+      whenIdle,
       ctx,
       log,
       records: () => records,
@@ -898,5 +903,50 @@ describe("change tools", () => {
         reason: jasmine.stringMatching(/Could not download .*nothing was changed for it/i),
       },
     ]);
+  });
+
+  it("every change waits for WowUp's update check to finish right before its backup", async () => {
+    const records = [
+      rec({
+        id: "a1",
+        name: "Alpha",
+        latestVersion: "2.0",
+        externalLatestReleaseId: "r2",
+        externalIds: [{ providerName: "Wago", id: "w1" }],
+      }),
+    ];
+    const json = JSON.stringify({
+      client_type: "ClassicEra",
+      addons: [{ id: "77", name: "B", provider_name: "Curse" }],
+    });
+    const calls: Array<[string, any]> = [
+      ["install_addon", { provider: "Curse", externalId: "12345" }],
+      ["update_addons", { addonIds: ["a1"] }],
+      ["remove_addon", { addonId: "a1" }],
+      ["replace_addon", { addonId: "a1", provider: "Curse", externalId: "12345" }],
+      ["switch_provider", { addonId: "a1", provider: "Wago" }],
+      ["set_auto_update", { addonId: "a1", enabled: false }],
+      ["set_ignored", { addonId: "a1", ignored: true }],
+      ["rescan", {}],
+      ["import_addons", { text: json }],
+    ];
+    for (const [tool, args] of calls) {
+      const m = make({ records, results: { "1": alphaRelease() } });
+      m.brokerService.installImportSummary.and.callFake(() =>
+        m.addonService.saveAddon(
+          rec({ id: "imp", name: "TipTac Reborn", externalId: "12345", installedFolderList: ["TipTac"] }),
+        ),
+      );
+      await m.tools[tool](args, m.ctx);
+      expect(m.whenIdle).withContext(tool).toHaveBeenCalledTimes(1);
+      expect(m.log.indexOf("idle"))
+        .withContext(tool)
+        .toBe(m.log.indexOf("backup") - 1);
+    }
+
+    // a preview takes no backup, so it doesn't wait
+    const p = make({ records, results: { "1": alphaRelease() } });
+    await p.tools.remove_addon({ addonId: "a1", preview: true }, p.ctx);
+    expect(p.whenIdle).not.toHaveBeenCalled();
   });
 });

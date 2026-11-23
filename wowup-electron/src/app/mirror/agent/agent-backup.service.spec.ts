@@ -187,7 +187,7 @@ describe("AgentBackupService", () => {
   let store: Map<string, any>;
   let wowRunning: boolean;
   let electron: { invoke: jasmine.Spy };
-  let session: { notifyAddonsChanged: jasmine.Spy };
+  let session: { notifyAddonsChanged: jasmine.Spy; autoUpdateComplete: jasmine.Spy };
   let service: AgentBackupService;
 
   const isLive = (op: string) =>
@@ -223,7 +223,10 @@ describe("AgentBackupService", () => {
         throw new Error(`unexpected channel ${channel}`);
       }),
     };
-    session = { notifyAddonsChanged: jasmine.createSpy("notifyAddonsChanged") };
+    session = {
+      notifyAddonsChanged: jasmine.createSpy("notifyAddonsChanged"),
+      autoUpdateComplete: jasmine.createSpy("autoUpdateComplete"),
+    };
 
     TestBed.configureTestingModule({
       providers: [
@@ -349,7 +352,10 @@ describe("AgentBackupService", () => {
     expect(r.restoredRecords).toBe(1);
     expect(r.removedRecords).toBe(0);
     expect(r.savedVariables).toBe("restored");
-    expect(session.notifyAddonsChanged).toHaveBeenCalled();
+    // My Addons reloads its list from storage; notifyAddonsChanged would start a full sync that writes back the
+    // records it read before the rollback
+    expect(session.autoUpdateComplete).toHaveBeenCalled();
+    expect(session.notifyAddonsChanged).not.toHaveBeenCalled();
   });
 
   it("rollback removes folders the change added", async () => {
@@ -384,7 +390,10 @@ describe("AgentBackupService", () => {
     expect(r.removedRecords).toBe(1);
     expect(r.restoredRecords).toBe(0);
     expect(r.savedVariables).toBe("none");
-    expect(session.notifyAddonsChanged).toHaveBeenCalled();
+    // My Addons reloads its list from storage; notifyAddonsChanged would start a full sync that writes back the
+    // records it read before the rollback
+    expect(session.autoUpdateComplete).toHaveBeenCalled();
+    expect(session.notifyAddonsChanged).not.toHaveBeenCalled();
   });
 
   it("rollback removes folders a later update added to a restored addon", async () => {

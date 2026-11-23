@@ -1,4 +1,4 @@
-import { BehaviorSubject, Observable } from "rxjs";
+import { BehaviorSubject, filter, firstValueFrom, Observable } from "rxjs";
 
 import { Injectable } from "@angular/core";
 
@@ -36,12 +36,30 @@ import {
   PREF_AGENT_PORT,
   SENSITIVE_AGENT_KEY,
 } from "./agent-settings";
-import { AgentToolHandler, AgentToolSet } from "./agent-tool";
+import { AgentToolContext, AgentToolHandler, AgentToolSet } from "./agent-tool";
 import { ChangeProvider, createChangeTools } from "./tools/change.tools";
 import { createDiscoveryTools, DiscoveryProvider } from "./tools/discovery.tools";
 import { createHealthTools } from "./tools/health.tools";
 import { createInspectTools, InspectProvider } from "./tools/inspect.tools";
 import { createRecoveryTools } from "./tools/recovery.tools";
+
+/**
+ * Tools that change addons or WowUp's addon records run one at a time: a change works out what it added by comparing
+ * the records before and after it, which only holds when nothing else changes them meanwhile.
+ */
+const SERIAL_TOOLS = new Set([
+  "install_addon",
+  "update_addons",
+  "remove_addon",
+  "replace_addon",
+  "switch_provider",
+  "set_auto_update",
+  "set_ignored",
+  "rescan",
+  "import_addons",
+  "rollback",
+  "check_updates",
+]);
 
 @Injectable({
   providedIn: "root",
@@ -50,6 +68,9 @@ export class AgentBridgeService {
   private readonly _tools = new Map<string, AgentToolHandler>();
   private readonly _statusSrc = new BehaviorSubject<AgentStatus>({ listening: false, url: "" });
   private _listening = false;
+  /** The serial tools' queue, and how many calls are in it */
+  private _serial: Promise<unknown> = Promise.resolve();
+  private _serialCount = 0;
 
   public readonly status$: Observable<AgentStatus> = this._statusSrc.asObservable();
 
@@ -71,7 +92,9 @@ export class AgentBridgeService {
   ) {}
 
   public registerTools(tools: AgentToolSet): void {
-    Object.entries(tools).forEach(([name, handler]) => this._tools.set(name, handler));
+    Object.entries(tools).forEach(([name, handler]) =>
+      this._tools.set(name, SERIAL_TOOLS.has(name) ? this.serial(handler) : handler),
+    );
   }
 
   public async initialize(): Promise<void> {
@@ -124,8 +147,9 @@ export class AgentBridgeService {
           return (await this._fileService.pathExists(addonsPath)) ? this._fileService.readdir(addonsPath) : [];
         },
         encodeBase64: (text) => this._electronService.invoke<string>("base64-encode", text),
-        notifyChanged: () => this._sessionService.notifyAddonsChanged(),
+        notifyChanged: () => this.reloadMyAddons(),
         getSecret: (key) => this._sensitiveStorage.getAsync(key),
+        whenIdle: (ctx) => this.whenSyncIdle(ctx),
       }),
     );
 
@@ -182,6 +206,43 @@ export class AgentBridgeService {
   public async regenerateKey(): Promise<AgentStatus> {
     await this._sensitiveStorage.setAsync(SENSITIVE_AGENT_KEY, newAgentKey());
     return this.configure(await this.getConfig());
+  }
+
+  /**
+   * My Addons reloads its list from storage on this (its only listener). notifyAddonsChanged would make it run a
+   * full update check instead, which writes back the records it read when it started, undoing a rollback, removal
+   * or pin that lands meanwhile.
+   */
+  private reloadMyAddons(): void {
+    this._sessionService.autoUpdateComplete();
+  }
+
+  /** Runs the handler after every serial call queued before it, once WowUp's update check isn't running */
+  private serial(handler: AgentToolHandler): AgentToolHandler {
+    return (args, ctx) => {
+      if (this._serialCount > 0) {
+        ctx.progress("Waiting for the agent change before this one to finish");
+      }
+      this._serialCount += 1;
+      const run = this._serial.then(async () => {
+        await this.whenSyncIdle(ctx);
+        return handler(args, ctx);
+      });
+      const settle = () => {
+        this._serialCount -= 1;
+      };
+      this._serial = run.then(settle, settle);
+      return run;
+    };
+  }
+
+  /** Resolves once WowUp isn't syncing (checking every installation for updates), whose end rewrites addon records */
+  private async whenSyncIdle(ctx: AgentToolContext): Promise<void> {
+    const syncing$ = this._addonService.syncing$;
+    if (await firstValueFrom(syncing$)) {
+      ctx.progress("Waiting for WowUp's update check to finish");
+      await firstValueFrom(syncing$.pipe(filter((syncing) => !syncing)));
+    }
   }
 
   private async configure(config: AgentConfig): Promise<AgentStatus> {

@@ -115,6 +115,8 @@ export interface ChangeDeps extends Omit<ReleaseFolderDeps, "getProvider"> {
   encodeBase64: (text: string) => Promise<string>;
   /** Tells My Addons to reload, after a change */
   notifyChanged?: () => void;
+  /** Resolves once WowUp isn't checking for updates (its sync rewrites addon records when it ends) */
+  whenIdle?: (ctx: AgentToolContext) => Promise<void>;
   getSecret: (key: string) => Promise<string | undefined>;
   fetchJson?: (url: string, headers: Record<string, string>) => Promise<unknown>;
   createCurseClient?: (apiKey: string) => CurseVersionClient;
@@ -272,6 +274,15 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       throw new Error("Pass addonId (from list_addons).");
     }
     return resolveAddon({ addonId }, installed);
+  };
+
+  /** The backup before a change, taken once no sync of WowUp's can rewrite the records it holds */
+  const takeBackup = async (
+    ctx: AgentToolContext,
+    ...args: Parameters<ChangeDeps["backupService"]["create"]>
+  ): Promise<{ id: string }> => {
+    await deps.whenIdle?.(ctx);
+    return backupService.create(...args);
   };
 
   /** Install progress as "Downloading TipTac Reborn 25%" */
@@ -559,7 +570,8 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       }
 
       const addon = await newAddonFor(installation, plan);
-      const backup = await backupService.create(
+      const backup = await takeBackup(
+        ctx,
         "install_addon",
         installation,
         claimants(installed, folders),
@@ -681,7 +693,8 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         return { changed: [], ...(skipped.length > 0 ? { skipped } : {}), note: "Nothing to update." };
       }
 
-      const backup = await backupService.create(
+      const backup = await takeBackup(
+        ctx,
         "update_addons",
         installation,
         [...targets, ...others(claimants(installed, allNew))],
@@ -741,7 +754,8 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         return preview;
       }
 
-      const backup = await backupService.create(
+      const backup = await takeBackup(
+        ctx,
         "remove_addon",
         installation,
         [addon],
@@ -792,7 +806,8 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       }
 
       const addon = await newAddonFor(installation, plan);
-      const backup = await backupService.create(
+      const backup = await takeBackup(
+        ctx,
         "replace_addon",
         installation,
         [old, ...claimants(installed, folders).filter((a) => a.id !== old.id)],
@@ -855,7 +870,8 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         return preview;
       }
 
-      const backup = await backupService.create(
+      const backup = await takeBackup(
+        ctx,
         "switch_provider",
         installation,
         [addon, ...claimants(installed, folders).filter((a) => a.id !== addon.id)],
@@ -873,7 +889,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       return { backupId: backup.id, changed: [changedOf("removed", addon), ...addedLines(added)] };
     },
 
-    set_auto_update: async (args) => {
+    set_auto_update: async (args, ctx) => {
       if (typeof args.enabled !== "boolean") {
         throw new Error("Pass enabled: true or false.");
       }
@@ -892,7 +908,8 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         return { changed: [], note: `${addon.name} already has auto-update ${state}.` };
       }
 
-      const backup = await backupService.create(
+      const backup = await takeBackup(
+        ctx,
         "set_auto_update",
         installation,
         [addon],
@@ -911,7 +928,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       return { backupId: backup.id, changed: [changedOf("updated", addon)] };
     },
 
-    set_ignored: async (args) => {
+    set_ignored: async (args, ctx) => {
       if (typeof args.ignored !== "boolean") {
         throw new Error("Pass ignored: true or false.");
       }
@@ -929,7 +946,8 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         return { changed: [], note: `${addon.name} is already ${ignored ? "ignored" : "not ignored"}.` };
       }
 
-      const backup = await backupService.create(
+      const backup = await takeBackup(
+        ctx,
         "set_ignored",
         installation,
         [addon],
@@ -958,7 +976,8 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         );
       }
 
-      const backup = await backupService.create(
+      const backup = await takeBackup(
+        ctx,
         "rescan",
         installation,
         installed,
@@ -1077,7 +1096,8 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         return { changed: [], ...(skipped.length > 0 ? { skipped } : {}), note: `Nothing to import: ${action}.` };
       }
 
-      const backup = await backupService.create(
+      const backup = await takeBackup(
+        ctx,
         "import_addons",
         installation,
         claimants(installed, folders),
