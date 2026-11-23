@@ -1,6 +1,6 @@
 # curseforge-mirror/WowUp
 
-WowUp with the CurseForge provider back, no ads and no tracking. It follows upstream WowUp releases.
+WowUp with the CurseForge provider back, no ads and no tracking. It follows upstream WowUp releases and is currently based on upstream 2.25.5.
 
 ## What's different
 
