@@ -77,28 +77,36 @@ export function createHealthTools(deps: HealthDeps): AgentToolSet {
     };
   };
 
-  const readErrors = async (installation: WowInstallation): Promise<RawError[]> => {
+  /** Every account's saved errors; an account whose file can't be read is skipped with a note */
+  const readErrors = async (installation: WowInstallation): Promise<{ errors: RawError[]; notes: string[] }> => {
     const accounts = join(deps.wtfService.getWtfPath(installation), "Account");
     let folders: string[] = [];
     try {
       folders = (await fileService.listDirectories(accounts)) ?? [];
     } catch {
-      return [];
+      return { errors: [], notes: [] };
     }
     const errors: RawError[] = [];
+    const notes: string[] = [];
     for (const folder of folders) {
       const file = join(accounts, folder, "SavedVariables", BUGGRABBER_FILE);
       if (!(await fileService.pathExists(file))) {
         continue;
       }
-      const db = parseLuaAssignments(await fileService.readFile(file)).BugGrabberDB as
-        | { errors?: Record<string, RawError> }
-        | undefined;
+      let db: { errors?: Record<string, RawError> } | undefined;
+      try {
+        db = parseLuaAssignments(await fileService.readFile(file)).BugGrabberDB as typeof db;
+      } catch (e) {
+        notes.push(
+          `Account ${folder}: its ${BUGGRABBER_FILE} could not be read (${e instanceof Error ? e.message : String(e)}); skipped`,
+        );
+        continue;
+      }
       if (db && typeof db.errors === "object" && db.errors !== null) {
         errors.push(...Object.values(db.errors).filter((e) => typeof e === "object" && e !== null));
       }
     }
-    return errors;
+    return { errors, notes };
   };
 
   return {
@@ -131,9 +139,10 @@ export function createHealthTools(deps: HealthDeps): AgentToolSet {
           : DEFAULT_LIMIT;
       const contains = typeof args.contains === "string" ? args.contains.trim().toLowerCase() : "";
 
-      const raw = await readErrors(installation);
+      const { errors: raw, notes } = await readErrors(installation);
+      const skipped = notes.length > 0 ? { notes } : {};
       if (raw.length === 0) {
-        return { errors: [], note: NO_ERRORS_NOTE };
+        return { errors: [], note: NO_ERRORS_NOTE, ...skipped };
       }
 
       const rows = raw
@@ -153,6 +162,7 @@ export function createHealthTools(deps: HealthDeps): AgentToolSet {
 
       return {
         errors: rows.map((e) => ({ ...e, addon: addonFolderFrom(e.message) ?? addonFolderFrom(e.stack) })),
+        ...skipped,
       };
     },
   };

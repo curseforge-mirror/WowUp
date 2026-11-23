@@ -120,4 +120,26 @@ describe("health tools", () => {
       note: "BugGrabber isn't installed or has no saved errors for this installation",
     });
   });
+
+  it("get_addon_errors skips an account whose BugGrabber file it can't read, with a note", async () => {
+    const BAD = join(WTF, "Account", "BAD", "SavedVariables", "!BugGrabber.lua");
+    const fileService = {
+      listDirectories: async () => ["ACC", "BAD"],
+      pathExists: async (p: string) => p === BG || p === BAD,
+      readFile: async (p: string) => (p === BAD ? 'BugGrabberDB = { ["errors"] = { {' : FILE),
+    };
+    const { tools } = make({ fileService });
+    const out: any = await tools.get_addon_errors({ installation: "i1" }, ctx());
+    expect(out.errors.length).toBe(3);
+    expect(out.notes).toEqual([
+      jasmine.stringMatching(/Account BAD: its !BugGrabber\.lua could not be read .*skipped/),
+    ]);
+
+    // when that was the only account
+    const only = make({ fileService: { ...fileService, listDirectories: async () => ["BAD"] } });
+    const none: any = await only.tools.get_addon_errors({ installation: "i1" }, ctx());
+    expect(none.errors).toEqual([]);
+    expect(none.note).toBe("BugGrabber isn't installed or has no saved errors for this installation");
+    expect(none.notes.length).toBe(1);
+  });
 });
