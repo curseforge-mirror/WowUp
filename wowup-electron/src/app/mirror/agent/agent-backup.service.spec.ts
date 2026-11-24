@@ -934,6 +934,47 @@ describe("AgentBackupService", () => {
       expect(r.skipped).toBeUndefined();
     });
 
+    it("for an addon with no externalId whose id a rescan changed, finds it by the same folders", async () => {
+      const handmade: any = {
+        id: "a-hand",
+        name: "Handmade",
+        providerName: "Unknown",
+        externalId: "",
+        installationId: "i1",
+        installedFolderList: ["Other"],
+        isIgnored: false,
+        autoUpdateEnabled: false,
+      };
+      store.set("a-hand", { ...handmade });
+      const m = await service.create("set_ignored", inst, [handmade], [], "set_ignored Handmade on", SETTINGS);
+      // the change, then a rescan re-creates the record with a new id; another Unknown record claims other folders
+      store.delete("a-hand");
+      store.set("n-hand", { ...handmade, id: "n-hand", installedFolderList: ["other"], isIgnored: true });
+      store.set("n-else", {
+        ...handmade,
+        id: "n-else",
+        name: "Else",
+        installedFolderList: ["Other", "Else"],
+        isIgnored: true,
+      });
+      jasmine.clock().tick(1000);
+
+      const r = await service.rollback(m.id);
+
+      expect(store.get("n-hand").isIgnored).toBeFalse();
+      expect(store.get("n-else").isIgnored).toBeTrue();
+      expect(r.restoredRecords).toBe(1);
+      expect(r.skipped).toBeUndefined();
+
+      // no record with exactly those folders: not installed any more
+      const again = await service.create("set_ignored", inst, [handmade], [], "set_ignored Handmade on", SETTINGS);
+      store.delete("n-hand");
+      jasmine.clock().tick(1000);
+      const r2 = await service.rollback(again.id);
+      expect(r2.skipped?.map((s) => s.name)).toEqual(["Handmade"]);
+      expect(store.get("n-else").isIgnored).toBeTrue();
+    });
+
     it("takes a settings safety backup first, so the rollback can be rolled back", async () => {
       const m = await service.create("set_ignored", inst, [curseFoo], [], "set_ignored Foo on", SETTINGS);
       store.set("a-foo", ignoredFoo());

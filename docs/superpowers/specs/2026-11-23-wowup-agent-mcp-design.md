@@ -133,7 +133,8 @@ Changes that only change records keep only records (no folder or SavedVariables 
 they roll back (`restoreMode`). A rescan's (`"records"`) puts every record back whole in place of the re-created ones;
 no folder changes. A `set_auto_update` or `set_ignored` backup (`"settings"`) writes back only the settings those tools
 change (`isIgnored`, `autoUpdateEnabled`, `autoUpdateNotificationsEnabled`), onto the addon's record as it is at
-rollback time: the same id, else the same provider and externalId in that installation. A later update, reinstall or
+rollback time: the same id, else the same provider and externalId in that installation, else (an addon with no
+externalId, such as an Unknown one a rescan re-created) the record claiming exactly the same folders. A later update, reinstall or
 replacement is kept as it is, and an addon removed since gets nothing back (no record claiming folders that are gone);
 the result lists it under `skipped`. The safety backup of such a rollback is a settings backup too.
 

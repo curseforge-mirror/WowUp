@@ -178,6 +178,13 @@ function sameProvider(
   );
 }
 
+/** Both claim the same folders, at least one, ignoring case and order */
+function sameFolders(a: Pick<Addon, "installedFolderList">, b: Pick<Addon, "installedFolderList">): boolean {
+  const keys = (x: Pick<Addon, "installedFolderList">) =>
+    [...new Set((x.installedFolderList ?? []).filter(isFolderName).map(folderKey))].sort().join("/");
+  return keys(a) !== "" && keys(a) === keys(b);
+}
+
 /** Same addon: same provider and external id, or the same name */
 function sameAddon(
   a: Pick<Addon, "name" | "providerName" | "externalId">,
@@ -839,16 +846,21 @@ export class AgentBackupService {
 
   /**
    * A settings backup: write the backed-up settings onto the record of each addon there is now (the same id, else
-   * the same provider and externalId in that installation), leaving its version, folders and everything else as a
-   * later update or reinstall made them. An addon no longer installed gets nothing (no record that claims folders
-   * that are gone, none next to a replacement claiming the same ones). No folder or other record is touched.
+   * the same provider and externalId in that installation, else for one with no externalId the record claiming
+   * exactly its folders), leaving its version, folders and everything else as a later update or reinstall made
+   * them. An addon no longer installed gets nothing (no record that claims folders that are gone, none next to a
+   * replacement claiming the same ones). No folder or other record is touched.
    */
   private async restoreSettings(manifest: BackupManifest, installation: WowInstallation): Promise<RollbackResult> {
     const current = await this._addonStorage.getAllForInstallationIdAsync(installation.id);
     const targets: Array<{ backedUp: Addon; now: Addon }> = [];
     const skipped: Array<{ name: string; reason: string }> = [];
     for (const backedUp of manifest.records) {
-      const now = current.find((a) => a.id === backedUp.id) ?? current.find((a) => sameProvider(a, backedUp));
+      const now =
+        current.find((a) => a.id === backedUp.id) ??
+        current.find((a) => sameProvider(a, backedUp)) ??
+        // No externalId to know it by (an Unknown addon): the record a rescan made for exactly its folders
+        (backedUp.externalId ? undefined : current.find((a) => sameFolders(a, backedUp)));
       if (!now?.id) {
         skipped.push({ name: backedUp.name, reason: NOT_INSTALLED_TEXT });
       } else if (!targets.some((t) => t.now.id === now.id)) {
