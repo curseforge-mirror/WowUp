@@ -1507,5 +1507,50 @@ describe("change tools", () => {
       expect(out.changedByWowUp).toBeUndefined();
       expect(m.backupService.create.calls.mostRecent().args[3]).toEqual(["TipTac", "TipTacOptions"]);
     });
+
+    it("warns when a dependency installed other folders than its backup was planned for", async () => {
+      const m = make({ results: { "12345": requiresLib, "500": lib } });
+      m.addonService.installAddon.and.callFake(async (a: any) => {
+        m.addRecord({ ...a, installedVersion: a.latestVersion, installedFolderList: ["TipTac", "TipTacOptions"] });
+        // a newer LibFoo came out between the plan and WowUp's own lookup at install time
+        m.addRecord({ ...libRecord, installedFolderList: ["LibFoo", "LibFoo_Extra"] });
+      });
+
+      const out: any = await m.tools.install_addon({ provider: "Curse", externalId: "12345" }, m.ctx);
+
+      expect(noted(m)).toEqual(["new1", "dep1"]);
+      expect(out.warnings).toEqual([
+        jasmine.stringMatching(/LibFoo.*LibFoo_Extra.*LibFoo\b.*backup doesn't cover LibFoo_Extra/),
+      ]);
+
+      // an update reports it among its warnings too
+      const u = make({
+        records: [
+          rec({
+            id: "a1",
+            name: "Alpha",
+            latestVersion: "2.0",
+            externalLatestReleaseId: "r2",
+            dependencies: [{ externalAddonId: "500", type: 2 }],
+          }),
+        ],
+        results: { "1": alphaRelease(), "500": lib },
+      });
+      u.addonService.updateAddon.and.callFake(async (a: any) => {
+        u.addRecord({ ...a, installedVersion: a.latestVersion });
+        u.addRecord({ ...libRecord, installedFolderList: ["LibFoo", "LibFoo_Extra"] });
+      });
+      const updated: any = await u.tools.update_addons({ addonIds: ["a1"] }, u.ctx);
+      expect(updated.warnings).toEqual([jasmine.stringMatching(/LibFoo.*backup doesn't cover LibFoo_Extra/)]);
+
+      // the same folders in another case and order are no change
+      const same = make({ results: { "12345": requiresLib, "500": lib } });
+      same.addonService.installAddon.and.callFake(async (a: any) => {
+        same.addRecord({ ...a, installedVersion: a.latestVersion, installedFolderList: ["TipTac"] });
+        same.addRecord({ ...libRecord, installedFolderList: ["libfoo"] });
+      });
+      const quiet: any = await same.tools.install_addon({ provider: "Curse", externalId: "12345" }, same.ctx);
+      expect(quiet.warnings).toBeUndefined();
+    });
   });
 });

@@ -770,6 +770,34 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       ids.includes(a.id) || releases.some((r) => isProvider(a, r.provider, r.externalId)) || isDependency(a);
   };
 
+  /**
+   * Warnings for the dependencies whose record claims other folders than the plan learned: WowUp looks each one up
+   * again when it installs it, so a release that came out meanwhile can write folders the backup doesn't cover
+   */
+  const dependencyWarnings = (added: Addon[], dependencies: Dependency[], written: string[]): string[] => {
+    const covered = new Set(written.map(folderKey));
+    return added.flatMap((a) => {
+      const planned = dependencies.find(
+        (d) => isProvider(a, d.line.provider, d.line.externalId) || isProvider(a, d.line.provider, d.recordExternalId),
+      );
+      const now = foldersOf(a);
+      if (!planned || now.length === 0 || carryOver(planned.line.folders, now) === true) {
+        return [];
+      }
+      const uncovered = uniqueFolders(now).filter((f) => !covered.has(folderKey(f)));
+      const was = planned.line.folders.join(", ") || "no folders";
+      const text = `${a.name}, a required dependency, installed ${now.join(", ")} instead of the ${was} its backup was planned for (a newer release came out meanwhile)`;
+      return [
+        uncovered.length > 0
+          ? `${text}; the backup doesn't cover ${uncovered.join(", ")}: if it was there before, rollback can't put it back.`
+          : `${text}.`,
+      ];
+    });
+  };
+
+  /** A result's warnings, when there are any */
+  const withWarnings = (warnings: string[]): { warnings?: string[] } => (warnings.length > 0 ? { warnings } : {});
+
   /** Records WowUp's install reconcile drops: unmatched ones claiming a folder the release writes */
   const droppedUnknowns = (installed: Addon[], folders: string[], except?: Addon): Addon[] =>
     installed.filter(
@@ -880,7 +908,12 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         madeBy([plan.line], dependencies, [addon.id]),
         () => install(addon, plan, ctx),
       );
-      return { backupId: backup.id, changed: addedLines(added, addon.id), ...changedByWowUp(byWowUp) };
+      return {
+        backupId: backup.id,
+        changed: addedLines(added, addon.id),
+        ...withWarnings(dependencyWarnings(added, dependencies, written)),
+        ...changedByWowUp(byWowUp),
+      };
     },
 
     update_addons: async (args, ctx) => {
@@ -1051,7 +1084,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
           ? { failed, note: `Some updates failed; rollback ${backup.id} undoes the ones that went through.` }
           : {}),
         ...(skipped.length > 0 ? { skipped } : {}),
-        ...(warnings.length > 0 ? { warnings } : {}),
+        ...withWarnings([...warnings, ...dependencyWarnings(added, dependencies, written)]),
         ...changedByWowUp(byWowUp),
       };
     },
@@ -1163,6 +1196,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       return {
         backupId: backup.id,
         changed: [changedOf("removed", old), ...addedLines(added, addon.id)],
+        ...withWarnings(dependencyWarnings(added, dependencies, written)),
         ...changedByWowUp(byWowUp),
       };
     },
@@ -1233,6 +1267,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       return {
         backupId: backup.id,
         changed: [changedOf("removed", addon), ...addedLines(added)],
+        ...withWarnings(dependencyWarnings(added, dependencies, written)),
         ...changedByWowUp(byWowUp),
       };
     },
@@ -1542,6 +1577,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
           ? { failed, note: `${failed.length} addon(s) did not install; rollback ${backup.id} undoes the rest.` }
           : {}),
         ...(skipped.length > 0 ? { skipped } : {}),
+        ...withWarnings(dependencyWarnings(added, allDependencies, written)),
         ...changedByWowUp(byWowUp),
       };
     },

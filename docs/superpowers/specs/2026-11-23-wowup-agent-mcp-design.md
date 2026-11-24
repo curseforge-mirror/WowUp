@@ -149,7 +149,10 @@ single change fails before its backup with nothing changed, and a batch (`update
 target out, as it does for a release it can't download. A dependency whose latest file has no download link
 (CurseForge, when the author turns off third-party downloads) writes nothing, but WowUp still saves its record before
 that install fails: it counts among the change's records (so rollback removes it), and a preview names it in its
-action ("saves a record ... it can't download") instead of under `alsoInstalls`.
+action ("saves a record ... it can't download") instead of under `alsoInstalls`. WowUp looks each dependency up
+again when it installs it, so a release published in between can write other folders than were planned: after the
+change, a dependency record whose folders differ from its plan gets a warning in the result, naming the folders the
+backup doesn't cover.
 
 A backup notes what its change added (`added`), which rollback removes, by what the call itself made, not by every
 record that appeared while it ran: WowUp's own hourly auto-update isn't blocked and can save records meanwhile. Only
