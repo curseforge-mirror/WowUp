@@ -104,7 +104,7 @@ export interface ChangeDeps extends Omit<ReleaseFolderDeps, "getProvider"> {
       addons: Addon[],
       extraFolders?: string[],
       summary?: string,
-      options?: { recordsOnly?: boolean },
+      options?: { recordsOnly?: boolean; restoreMode?: "records" | "settings" },
     ): Promise<{ id: string }>;
     recordAdded(id: string, added: Addon[]): Promise<void>;
   };
@@ -139,8 +139,14 @@ interface InstallPlan {
  */
 const PLACEHOLDER_FOLDER_PROVIDERS = [ADDON_PROVIDER_GITHUB, ADDON_PROVIDER_ZIP].map((p) => p.toLowerCase());
 
-/** For changes that only change records (rescan, auto-update, ignore): no folder or SavedVariables copies */
+/** For a rescan, which re-creates every record: no folder or SavedVariables copies; rollback puts records back whole */
 const RECORDS_ONLY = { recordsOnly: true };
+
+/**
+ * For set_auto_update and set_ignored, which change only an addon's ignored and auto-update settings: rollback writes
+ * back just those, onto the addon's record there is then, so an update, reinstall or removal afterwards is kept.
+ */
+const SETTINGS_ONLY = { recordsOnly: true, restoreMode: "settings" as const };
 
 const IMPORT_ERRORS: Record<string, string> = {
   GENERIC_IMPORT_ERROR: "The import lists no addons.",
@@ -958,7 +964,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         [addon],
         [],
         `set_auto_update ${addon.name} ${state}`,
-        RECORDS_ONLY,
+        SETTINGS_ONLY,
       );
       await runChange(backup.id, installation, installed, `Turning auto-update ${state} for ${addon.name}`, () => {
         // As My Addons does: auto-update brings notifications along and un-ignores the addon
@@ -997,7 +1003,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         [addon],
         [],
         `set_ignored ${addon.name} ${ignored ? "on" : "off"}`,
-        RECORDS_ONLY,
+        SETTINGS_ONLY,
       );
       await runChange(backup.id, installation, installed, `Marking ${addon.name}`, () => {
         // As My Addons does: ignoring an addon turns its auto-update off

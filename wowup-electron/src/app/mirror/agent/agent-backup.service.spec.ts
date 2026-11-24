@@ -817,6 +817,145 @@ describe("AgentBackupService", () => {
     expect(fs.read(CORE)).toBe("core v1");
   });
 
+  describe("a settings backup (set_auto_update, set_ignored)", () => {
+    const SETTINGS = { recordsOnly: true, restoreMode: "settings" as const };
+    const curseFoo: any = {
+      ...foo,
+      providerName: "Curse",
+      externalId: "1",
+      isIgnored: false,
+      autoUpdateEnabled: true,
+      autoUpdateNotificationsEnabled: true,
+    };
+    /** What set_ignored writes */
+    const ignoredFoo = (over: any = {}) => ({
+      ...curseFoo,
+      isIgnored: true,
+      autoUpdateEnabled: false,
+      ...over,
+    });
+
+    beforeEach(() => {
+      store.set("a-foo", { ...curseFoo });
+    });
+
+    it("notes its restore mode, apart from a rescan's whole-record one", async () => {
+      const settings = await service.create("set_ignored", inst, [curseFoo], [], "set_ignored Foo on", SETTINGS);
+      expect(settings.recordsOnly).toBeTrue();
+      expect(settings.restoreMode).toBe("settings");
+      expect(manifestOf(settings.id).restoreMode).toBe("settings");
+
+      const rescan = await service.create("rescan", inst, [curseFoo], [], "rescan", { recordsOnly: true });
+      expect(rescan.restoreMode).toBe("records");
+    });
+
+    it("rolled back after an update, puts back only the settings and keeps the update", async () => {
+      const m = await service.create("set_ignored", inst, [curseFoo], [], "set_ignored Foo on", SETTINGS);
+      // the change, then a later update by the user writes a new version and adds a folder
+      store.set(
+        "a-foo",
+        ignoredFoo({ installedVersion: "2.0", installedFolderList: ["Foo", "Foo_Options", "Foo_New"] }),
+      );
+      fs.put(join(ADDONS, "Foo_New", "new.lua"), "new");
+      jasmine.clock().tick(1000);
+      fs.ops.length = 0;
+
+      const r = await service.rollback(m.id);
+
+      const now = store.get("a-foo");
+      expect(now.isIgnored).toBeFalse();
+      expect(now.autoUpdateEnabled).toBeTrue();
+      expect(now.autoUpdateNotificationsEnabled).toBeTrue();
+      expect(now.installedVersion).toBe("2.0");
+      expect(now.installedFolderList).toEqual(["Foo", "Foo_Options", "Foo_New"]);
+      expect(r.restoredRecords).toBe(1);
+      expect(r.removedRecords).toBe(0);
+      expect(r.restoredFolders).toEqual([]);
+      expect(r.removedFolders).toEqual([]);
+      expect(fs.ops.some(isLive)).toBeFalse();
+    });
+
+    it("rolled back after the addon was removed, restores nothing for it and says so", async () => {
+      const m = await service.create("set_ignored", inst, [curseFoo], [], "set_ignored Foo on", SETTINGS);
+      store.delete("a-foo");
+      await fs.api().remove(join(ADDONS, "Foo"));
+      await fs.api().remove(join(ADDONS, "Foo_Options"));
+      jasmine.clock().tick(1000);
+
+      const r = await service.rollback(m.id);
+
+      // no ghost record claiming folders that are gone
+      expect(store.has("a-foo")).toBeFalse();
+      expect(store.size).toBe(0);
+      expect(r.restoredRecords).toBe(0);
+      expect(r.skipped).toEqual([{ name: "Foo", reason: jasmine.stringMatching(/no longer installed/) }]);
+    });
+
+    it("rolled back after the addon was replaced, leaves the replacement alone", async () => {
+      const m = await service.create("set_auto_update", inst, [curseFoo], [], "set_auto_update Foo off", SETTINGS);
+      // later Foo is replaced by another addon that writes the same folders
+      store.delete("a-foo");
+      const replacement = {
+        id: "a-fork",
+        name: "Foo Fork",
+        providerName: "GitHub",
+        externalId: "someone/foo-fork",
+        installationId: "i1",
+        installedVersion: "9.0",
+        installedFolderList: ["Foo", "Foo_Options"],
+        isIgnored: true,
+        autoUpdateEnabled: false,
+      };
+      store.set("a-fork", { ...replacement });
+      jasmine.clock().tick(1000);
+
+      const r = await service.rollback(m.id);
+
+      expect([...store.keys()]).toEqual(["a-fork"]);
+      expect(store.get("a-fork")).toEqual(replacement);
+      expect(r.restoredRecords).toBe(0);
+      expect(r.removedRecords).toBe(0);
+      expect(r.skipped?.map((s) => s.name)).toEqual(["Foo"]);
+    });
+
+    it("rolled back after a reinstall or rescan gave the addon a new id, puts the settings on that record", async () => {
+      const m = await service.create("set_ignored", inst, [curseFoo], [], "set_ignored Foo on", SETTINGS);
+      store.delete("a-foo");
+      store.set("n-foo", ignoredFoo({ id: "n-foo", installedVersion: "2.0" }));
+      jasmine.clock().tick(1000);
+
+      const r = await service.rollback(m.id);
+
+      expect([...store.keys()]).toEqual(["n-foo"]);
+      expect(store.get("n-foo").isIgnored).toBeFalse();
+      expect(store.get("n-foo").autoUpdateEnabled).toBeTrue();
+      expect(store.get("n-foo").installedVersion).toBe("2.0");
+      expect(r.restoredRecords).toBe(1);
+      expect(r.skipped).toBeUndefined();
+    });
+
+    it("takes a settings safety backup first, so the rollback can be rolled back", async () => {
+      const m = await service.create("set_ignored", inst, [curseFoo], [], "set_ignored Foo on", SETTINGS);
+      store.set("a-foo", ignoredFoo());
+      jasmine.clock().tick(1000);
+
+      const r = await service.rollback(m.id);
+      const safety = manifestOf(r.safetyBackupId);
+      expect(safety.recordsOnly).toBeTrue();
+      expect(safety.restoreMode).toBe("settings");
+      expect(safety.records.map((a: any) => [a.id, a.isIgnored])).toEqual([["a-foo", true]]);
+      expect(store.get("a-foo").isIgnored).toBeFalse();
+
+      // the user updates Foo in between; rolling the rollback back changes only the settings again
+      store.set("a-foo", { ...store.get("a-foo"), installedVersion: "3.0" });
+      jasmine.clock().tick(1000);
+      await service.rollback(r.safetyBackupId);
+      expect(store.get("a-foo").isIgnored).toBeTrue();
+      expect(store.get("a-foo").autoUpdateEnabled).toBeFalse();
+      expect(store.get("a-foo").installedVersion).toBe("3.0");
+    });
+  });
+
   it("a backup of a symlinked addon folder fails with one clear sentence and changes nothing", async () => {
     fs.links.add(normalize(join(ADDONS, "Foo")));
     await expectAsync(service.create("update_addons", inst, [foo])).toBeRejectedWithError(

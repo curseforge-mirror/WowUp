@@ -68,6 +68,24 @@ export interface BackupManifest {
   safetyBackupId?: string;
   /** Only records were backed up (no folders or SavedVariables): rollback restores records and removes no folder */
   recordsOnly?: boolean;
+  /**
+   * How a records-only backup is rolled back. "records" (a rescan's; also when absent): every record is put back
+   * whole in place of the ones there now. "settings" (set_auto_update, set_ignored): only the settings those tools
+   * change are written back, onto the record of that addon there is then; nothing else about it is touched.
+   */
+  restoreMode?: RestoreMode;
+}
+
+export type RestoreMode = "records" | "settings";
+
+/** What set_auto_update and set_ignored change, and all a "settings" rollback writes back */
+export const SETTINGS_KEYS = ["isIgnored", "autoUpdateEnabled", "autoUpdateNotificationsEnabled"] as const;
+
+export interface CreateOptions {
+  /** Keep only the records (for changes that only change records) */
+  recordsOnly?: boolean;
+  /** For a records-only backup: "settings" when the change only changes SETTINGS_KEYS; default "records" */
+  restoreMode?: RestoreMode;
 }
 
 export interface RollbackResult {
@@ -77,7 +95,12 @@ export interface RollbackResult {
   restoredRecords: number;
   removedRecords: number;
   savedVariables: "restored" | "pending-wow-running" | "none";
+  /** Addons the backup holds that this rollback restored nothing for, and why */
+  skipped?: Array<{ name: string; reason: string }>;
 }
+
+/** Why a settings rollback restores nothing for an addon */
+const NOT_INSTALLED_TEXT = "no longer installed, so its settings were not restored";
 
 export type BackupSummary = Pick<BackupManifest, "id" | "tool" | "createdAt" | "installationId"> & {
   installation: string;
@@ -98,6 +121,7 @@ interface SnapshotOptions {
   addedNames?: string[];
   summary?: string;
   recordsOnly?: boolean;
+  restoreMode?: RestoreMode;
 }
 
 function message(e: unknown): string {
@@ -141,17 +165,25 @@ function isFolderName(name: unknown): name is string {
   return typeof name === "string" && name.trim() !== "" && name !== "." && name !== ".." && !/[\\/:\0]/.test(name);
 }
 
+/** Same provider and external id */
+function sameProvider(
+  a: Pick<Addon, "providerName" | "externalId">,
+  b: Pick<Addon, "providerName" | "externalId">,
+): boolean {
+  return (
+    !!a.externalId &&
+    a.externalId === b.externalId &&
+    (a.providerName ?? "").toLowerCase() === (b.providerName ?? "").toLowerCase()
+  );
+}
+
 /** Same addon: same provider and external id, or the same name */
 function sameAddon(
   a: Pick<Addon, "name" | "providerName" | "externalId">,
   b: Pick<Addon, "name" | "providerName" | "externalId">,
 ): boolean {
   const name = (n: string | undefined) => (n ?? "").trim().toLowerCase();
-  const byProvider =
-    !!a.externalId &&
-    a.externalId === b.externalId &&
-    (a.providerName ?? "").toLowerCase() === (b.providerName ?? "").toLowerCase();
-  return byProvider || (name(a.name) !== "" && name(a.name) === name(b.name));
+  return sameProvider(a, b) || (name(a.name) !== "" && name(a.name) === name(b.name));
 }
 
 function assertFolderName(name: unknown): string {
@@ -234,7 +266,8 @@ export class AgentBackupService {
   /**
    * Copy each addon's folders (plus `extraFolders`), its record and the SavedVariables named after those folders.
    * Only copies; the live install is never touched. With `recordsOnly` (for changes that only change records) just
-   * the records are kept, with the AddOns entries and record ids there at the time.
+   * the records are kept, with the AddOns entries and record ids there at the time; `restoreMode` says how they are
+   * rolled back (see BackupManifest.restoreMode).
    */
   public create(
     tool: string,
@@ -242,11 +275,14 @@ export class AgentBackupService {
     addons: Addon[],
     extraFolders: string[] = [],
     summary?: string,
-    options: { recordsOnly?: boolean } = {},
+    options: CreateOptions = {},
   ): Promise<BackupManifest> {
     return this.exclusive(async () => {
       if (typeof tool !== "string" || tool.trim() === "") {
         throw new Error("A backup needs the name of the tool making the change.");
+      }
+      if (options.restoreMode !== undefined && options.recordsOnly !== true) {
+        throw new Error("A restore mode is only for a records-only backup.");
       }
       const records = this.checkRecords(installation, addons);
       if (options.recordsOnly === true) {
@@ -258,6 +294,7 @@ export class AgentBackupService {
           savedVariables: [],
           summary,
           recordsOnly: true,
+          restoreMode: options.restoreMode === "settings" ? "settings" : "records",
         });
       }
       const folders = uniqueFolders(
@@ -324,6 +361,9 @@ export class AgentBackupService {
       const installation = await this.findInstallation(manifest);
       if (manifest.savedVariablesPending) {
         return await this.finishSavedVariables(manifest, installation);
+      }
+      if (manifest.recordsOnly && manifest.restoreMode === "settings") {
+        return await this.restoreSettings(manifest, installation);
       }
       return await this.restore(manifest, installation);
     });
@@ -468,6 +508,7 @@ export class AgentBackupService {
       }
       if (o.recordsOnly) {
         manifest.recordsOnly = true;
+        manifest.restoreMode = o.restoreMode ?? "records";
       }
       if (o.addedNames && o.addedNames.length > 0) {
         manifest.added.names = o.addedNames;
@@ -792,6 +833,72 @@ export class AgentBackupService {
       restoredRecords,
       removedRecords,
       savedVariables,
+    };
+  }
+
+  /**
+   * A settings backup: write the backed-up settings onto the record of each addon there is now (the same id, else
+   * the same provider and externalId in that installation), leaving its version, folders and everything else as a
+   * later update or reinstall made them. An addon no longer installed gets nothing (no record that claims folders
+   * that are gone, none next to a replacement claiming the same ones). No folder or other record is touched.
+   */
+  private async restoreSettings(manifest: BackupManifest, installation: WowInstallation): Promise<RollbackResult> {
+    const current = await this._addonStorage.getAllForInstallationIdAsync(installation.id);
+    const targets: Array<{ backedUp: Addon; now: Addon }> = [];
+    const skipped: Array<{ name: string; reason: string }> = [];
+    for (const backedUp of manifest.records) {
+      const now = current.find((a) => a.id === backedUp.id) ?? current.find((a) => sameProvider(a, backedUp));
+      if (!now?.id) {
+        skipped.push({ name: backedUp.name, reason: NOT_INSTALLED_TEXT });
+      } else if (!targets.some((t) => t.now.id === now.id)) {
+        targets.push({ backedUp, now });
+      }
+    }
+
+    // 1. Safety backup of the settings this rollback overwrites, rolled back the same way
+    const safety = await this.snapshot({
+      tool: `rollback-${manifest.id}`,
+      installation,
+      records: targets.map((t) => JSON.parse(JSON.stringify(t.now)) as Addon),
+      folders: [],
+      savedVariables: [],
+      summary: `State before rolling back ${manifest.id}`,
+      recordsOnly: true,
+      restoreMode: "settings",
+    });
+
+    // 2. The settings, on the records there are now
+    let restoredRecords = 0;
+    try {
+      for (const { backedUp, now } of targets) {
+        const updated: Addon = { ...now };
+        for (const key of SETTINGS_KEYS) {
+          // one the backed-up record didn't have is unset again (storage drops undefined)
+          updated[key] = backedUp[key];
+        }
+        await this._addonStorage.setAsync(updated.id, updated);
+        restoredRecords += 1;
+      }
+    } catch (e) {
+      throw new Error(
+        `Rollback of ${manifest.id} stopped partway: ${message(e)}. ` +
+          `The state before this rollback is in backup ${safety.id}; roll back to it to return there.`,
+      );
+    } finally {
+      if (restoredRecords > 0) {
+        // As in restore: My Addons reloads its list from storage without starting a full update check
+        this._sessionService.autoUpdateComplete();
+      }
+    }
+
+    return {
+      safetyBackupId: safety.id,
+      restoredFolders: [],
+      removedFolders: [],
+      restoredRecords,
+      removedRecords: 0,
+      savedVariables: "none",
+      ...(skipped.length > 0 ? { skipped } : {}),
     };
   }
 

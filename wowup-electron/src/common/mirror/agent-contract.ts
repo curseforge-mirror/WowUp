@@ -411,7 +411,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
     name: "rollback",
     annotations: DESTRUCTIVE,
     description:
-      "Undo a change by restoring its backup: removes folders the change added, restores addon folders and records, and restores SavedVariables (deferred while WoW is running; call again after closing WoW to finish). Takes a safety backup of the current state first and returns its id.",
+      "Undo a change by restoring its backup: removes folders the change added, restores addon folders and records, and restores SavedVariables (deferred while WoW is running; call again after closing WoW to finish). A set_auto_update or set_ignored backup puts back only those settings, on the addon as it is installed now (an addon removed since gets nothing and is listed under skipped). Takes a safety backup of the current state first and returns its id.",
     inputSchema: schema({ backupId: str("Backup id from list_backups or a change result.") }, ["backupId"]),
   },
 ];

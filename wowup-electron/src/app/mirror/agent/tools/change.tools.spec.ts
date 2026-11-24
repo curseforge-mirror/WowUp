@@ -1001,7 +1001,11 @@ describe("change tools", () => {
       const [name, , addons, folders, , options] = m.backupService.create.calls.mostRecent().args;
       expect(name).toBe(tool);
       expect(folders).withContext(tool).toEqual([]);
-      expect(options).withContext(tool).toEqual({ recordsOnly: true });
+      // a rescan's rollback puts every record back whole; the settings tools' puts back only the settings they
+      // change, on the record there is then (an update, reinstall or removal afterwards is kept)
+      expect(options)
+        .withContext(tool)
+        .toEqual(tool === "rescan" ? { recordsOnly: true } : { recordsOnly: true, restoreMode: "settings" });
       expect(addons.map((a: any) => a.id))
         .withContext(tool)
         .toEqual(tool === "rescan" ? ["a1", "a2"] : ["a1"]);
