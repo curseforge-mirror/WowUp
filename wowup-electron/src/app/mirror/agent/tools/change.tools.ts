@@ -42,10 +42,11 @@ export interface ChangePreview {
   /** Whether the addon keeps its folder names (and so its SavedVariables and settings) */
   settingsCarryOver: boolean | "partial";
   /**
-   * Required dependencies of the release that aren't installed from its provider yet: WowUp installs them along
-   * (skipping one whose folders are already there). Their names and folders are only known when they install.
+   * Required dependencies of the releases that no installed addon is yet (and theirs in turn), from the release's
+   * provider: WowUp installs them along after the addon (skipping one whose listed folders an installed addon already
+   * claims). With the folders each one writes; `foldersReplaced` includes those on disk, and the backup covers them.
    */
-  alsoInstalls?: Array<{ provider: string; externalId: string }>;
+  alsoInstalls?: AddonLine[];
 }
 
 export interface ChangedLine {
@@ -132,6 +133,20 @@ interface InstallPlan {
   pinned: boolean;
   line: AddonLine;
 }
+
+/** A required dependency WowUp installs along with a release */
+interface Dependency {
+  /** Its externalId is the id the release lists it by */
+  line: AddonLine;
+  /** The externalId its record gets (the provider's own id for it) */
+  recordExternalId: string;
+}
+
+/** A dependency as a release (AddonSearchResultFile) or an installed addon's record (Addon) lists it */
+type ListedDependency = { externalAddonId: string; type: AddonDependencyType };
+
+/** Most required dependencies one change looks up, theirs in turn included, before it gives up */
+const MAX_DEPENDENCIES = 50;
 
 /**
  * Providers whose folder list is a placeholder, not the zip's folders: GitHub lists the repository name, Zip the file
@@ -254,6 +269,50 @@ function isProvider(a: Addon, provider: string, externalId: string): boolean {
   return (a.providerName ?? "").toLowerCase() === provider.toLowerCase() && String(a.externalId ?? "") === externalId;
 }
 
+/** The required ones of a release's or record's dependencies, once each, as WowUp's getRequiredDependencies picks */
+function requiredOf(dependencies: ListedDependency[] | undefined): string[] {
+  return [
+    ...new Set(
+      (Array.isArray(dependencies) ? dependencies : [])
+        .filter((d) => d?.type === AddonDependencyType.Required && d.externalAddonId !== undefined)
+        .map((d) => String(d.externalAddonId)),
+    ),
+  ];
+}
+
+/**
+ * As WowUp's isDependencyInstalled: a record from that provider (its exact name) with that externalId, or listing it
+ * among its externalIds
+ */
+function hasDependency(installed: Addon[], provider: string, externalId: string): boolean {
+  return installed.some(
+    (a) =>
+      (a.providerName === provider && a.externalId === externalId) ||
+      !!a.externalIds?.some((e) => e.providerName === provider && e.id === externalId),
+  );
+}
+
+function dependencyKey(provider: string, externalId: string): string {
+  return `${provider.toLowerCase()}|${externalId}`;
+}
+
+/** Dependencies of several releases, once each */
+function uniqueDependencies(dependencies: Dependency[]): Dependency[] {
+  const seen = new Set<string>();
+  return dependencies.filter((d) => {
+    const k = dependencyKey(d.line.provider, d.line.externalId);
+    if (seen.has(k)) {
+      return false;
+    }
+    seen.add(k);
+    return true;
+  });
+}
+
+function dependencyFolders(dependencies: Dependency[]): string[] {
+  return uniqueFolders(dependencies.flatMap((d) => d.line.folders));
+}
+
 /** Names for a backup summary, the first few then a count */
 function listNames(names: string[], max = 5): string {
   return names.length <= max ? names.join(", ") : `${names.slice(0, max).join(", ")} and ${names.length - max} more`;
@@ -373,6 +432,124 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       return await learn();
     } catch (e) {
       return { error: `${message(e)} Nothing was changed for it.` };
+    }
+  };
+
+  /**
+   * One required dependency as WowUp's install finds it: the latest file at the release's provider for the
+   * installation's channel, with the folders it writes learned like a release's. Undefined when WowUp can't install
+   * it either (provider not available, no such addon, no file or no download link); a lookup or download that fails
+   * throws.
+   */
+  const lookupDependency = async (
+    installation: WowInstallation,
+    providerName: string,
+    externalId: string,
+    ctx: AgentToolContext,
+  ): Promise<{ dependency: Dependency; requires: string[] } | undefined> => {
+    const provider = deps.getProvider(canonicalProvider(providerName));
+    if (!provider) {
+      return undefined;
+    }
+    const along = `a required dependency WowUp installs along`;
+    let result: AddonSearchResult | undefined;
+    try {
+      result = await provider.getById(externalId, installation);
+    } catch (e) {
+      throw new Error(`Could not look up ${providerName} ${externalId}, ${along}: ${message(e)}.`);
+    }
+    const file = result ? getLatestFile(result, installation.defaultAddonChannelType) : undefined;
+    if (!result || !file?.downloadUrl) {
+      return undefined;
+    }
+    let folders: string[];
+    try {
+      folders = await learnFolders(
+        file.folders,
+        { provider: providerName, externalId, name: result.name, version: file.version, url: file.downloadUrl },
+        ctx,
+      );
+    } catch (e) {
+      throw new Error(`${message(e)} ${result.name} is ${along}.`);
+    }
+    return {
+      dependency: {
+        line: {
+          name: result.name,
+          provider: result.providerName || providerName,
+          externalId,
+          version: file.version,
+          folders,
+        },
+        recordExternalId: String(result.externalId ?? externalId),
+      },
+      requires: requiredOf(file.dependencies),
+    };
+  };
+
+  /**
+   * What WowUp's installDependencies installs after the releases of one change, theirs in turn included: required
+   * dependencies at the release's provider that no record installed then has (`installed`, as it will be when they
+   * install) and that the change doesn't install itself (`covered`). Each is looked up once per call, a few
+   * downloads at a time; a lookup or download that fails throws.
+   */
+  const dependencyPlanner = (installation: WowInstallation, installed: Addon[], ctx: AgentToolContext) => {
+    const lookups = new Map<string, ReturnType<typeof lookupDependency>>();
+    const lookup = (provider: string, externalId: string): ReturnType<typeof lookupDependency> => {
+      const key = dependencyKey(provider, externalId);
+      const known = lookups.get(key);
+      if (known !== undefined) {
+        return known;
+      }
+      const found = lookupDependency(installation, provider, externalId, ctx);
+      lookups.set(key, found);
+      return found;
+    };
+    return async (
+      provider: string,
+      listed: ListedDependency[] | undefined,
+      covered: Array<{ provider: string; externalId: string }>,
+    ): Promise<Dependency[]> => {
+      const seen = new Set(covered.map((c) => dependencyKey(c.provider, c.externalId)));
+      const found: Dependency[] = [];
+      let looked = 0;
+      let level = requiredOf(listed).map((externalId) => ({ provider, externalId }));
+      while (level.length > 0) {
+        const wanted = level.filter((d) => {
+          const k = dependencyKey(d.provider, d.externalId);
+          if (seen.has(k) || hasDependency(installed, d.provider, d.externalId)) {
+            return false;
+          }
+          seen.add(k);
+          return true;
+        });
+        looked += wanted.length;
+        if (looked > MAX_DEPENDENCIES) {
+          throw new Error(`It requires more than ${MAX_DEPENDENCIES} dependencies, too many to back up.`);
+        }
+        const nodes = await Promise.all(wanted.map((d) => lookup(d.provider, d.externalId)));
+        level = [];
+        for (const node of nodes) {
+          if (node) {
+            found.push(node.dependency);
+            // WowUp installs a dependency's own dependencies from its provider in turn
+            level.push(...node.requires.map((externalId) => ({ provider: node.dependency.line.provider, externalId })));
+          }
+        }
+      }
+      return found;
+    };
+  };
+
+  /** One change's dependencies: one whose folders can't be learned fails the call */
+  const dependenciesOfRelease = async (
+    planner: ReturnType<typeof dependencyPlanner>,
+    ...args: Parameters<ReturnType<typeof dependencyPlanner>>
+  ): Promise<Dependency[]> => {
+    try {
+      return await planner(...args);
+    } catch (e) {
+      throw new Error(`${message(e)} Nothing was changed.`);
     }
   };
 
@@ -550,27 +727,29 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
   const claimants = (installed: Addon[], folders: string[]): Addon[] =>
     installed.filter((a) => overlaps(foldersOf(a), folders));
 
-  /** The release's required dependencies not yet installed from its provider, as WowUp's install looks them up */
-  const dependenciesOf = (plan: InstallPlan, installed: Addon[]): Array<{ provider: string; externalId: string }> =>
-    [
-      ...new Set(
-        (plan.file.dependencies ?? [])
-          .filter((d) => d.type === AddonDependencyType.Required)
-          .map((d) => String(d.externalAddonId)),
-      ),
-    ]
-      .filter((id) => id !== plan.line.externalId && !installed.some((a) => isProvider(a, plan.line.provider, id)))
-      .map((externalId) => ({ provider: plan.line.provider, externalId }));
+  /** The required dependencies WowUp installs after a planned release; one that can't be learned fails the call */
+  const dependenciesOfPlan = (
+    installation: WowInstallation,
+    plan: InstallPlan,
+    installed: Addon[],
+    ctx: AgentToolContext,
+  ): Promise<Dependency[]> =>
+    dependenciesOfRelease(dependencyPlanner(installation, installed, ctx), plan.line.provider, plan.file.dependencies, [
+      plan.line,
+    ]);
 
-  /** A plan-based preview with its dependencies noted */
-  const withDependencies = (preview: ChangePreview, plan: InstallPlan, installed: Addon[]): ChangePreview => {
-    const needed = dependenciesOf(plan, installed);
-    if (needed.length === 0) {
+  /** A preview with the dependencies WowUp installs along noted */
+  const withDependencies = (preview: ChangePreview, dependencies: Dependency[]): ChangePreview => {
+    if (dependencies.length === 0) {
       return preview;
     }
-    const list = needed.map((d) => `${d.provider} ${d.externalId}`).join(", ");
-    const what = needed.length === 1 ? "1 required dependency" : `${needed.length} required dependencies`;
-    return { ...preview, action: `${preview.action}; may also install ${what}: ${list}`, alsoInstalls: needed };
+    const list = dependencies.map((d) => `${d.line.provider} ${d.line.externalId}`).join(", ");
+    const what = dependencies.length === 1 ? "1 required dependency" : `${dependencies.length} required dependencies`;
+    return {
+      ...preview,
+      action: `${preview.action}; may also install ${what}: ${list}`,
+      alsoInstalls: dependencies.map((d) => d.line),
+    };
   };
 
   const recordOnlyPreview = (installation: WowInstallation, action: string): ChangePreview => ({
@@ -604,6 +783,8 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       const plan = await planInstall(installation, providerArg, externalId, str(args, "version"), ctx);
       refuseInstalled(plan.line.provider, plan.line.externalId);
       const folders = plan.line.folders;
+      const dependencies = await dependenciesOfPlan(installation, plan, installed, ctx);
+      const written = uniqueFolders([...folders, ...dependencyFolders(dependencies)]);
 
       if (args.preview === true) {
         const disk = await diskOf(installation);
@@ -612,10 +793,10 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
           installation: nameOf(installation),
           add: [plan.line],
           remove: droppedUnknowns(installed, folders).map((a) => lineOf(a)),
-          foldersReplaced: onDisk(folders, disk),
+          foldersReplaced: onDisk(written, disk),
           settingsCarryOver: installCarryOver(folders, disk, droppedUnknowns(installed, folders)),
         };
-        return withDependencies(preview, plan, installed);
+        return withDependencies(preview, dependencies);
       }
 
       const addon = await newAddonFor(installation, plan);
@@ -623,8 +804,8 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         ctx,
         "install_addon",
         installation,
-        claimants(installed, folders),
-        folders,
+        claimants(installed, written),
+        written,
         `install_addon ${plan.line.provider} ${plan.line.externalId} ${plan.line.name} ${ver(plan.line.version)}`,
       );
       const { added } = await runChange(backup.id, installation, installed, `Installing ${plan.line.name}`, () =>
@@ -681,10 +862,20 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         );
       }
 
-      // What each update writes, learned before anything is backed up. One whose release can't be downloaded is
-      // left out (skipped, unchanged); the others go ahead.
+      // What each update writes, learned before anything is backed up: its release, and the required dependencies
+      // WowUp installs after it (from the record's dependencies, which WowUp's sync keeps to the release on offer).
+      // One whose release or dependencies can't be learned is left out (skipped, unchanged); the others go ahead.
+      const planner = dependencyPlanner(installation, installed, ctx);
+      const dependenciesOf = new Map<string, Dependency[]>();
       const learned = await Promise.all(
-        targets.map(async (a) => [a, await batchFolders(() => updateFolders(installation, a, ctx))] as const),
+        targets.map(async (a) => {
+          const folders = await batchFolders(async () => {
+            const own = await updateFolders(installation, a, ctx);
+            dependenciesOf.set(a.id, await planner(a.providerName ?? "", a.dependencies, []));
+            return own;
+          });
+          return [a, folders] as const;
+        }),
       );
       const newFolders = new Map<string, string[]>();
       const unlearned: Addon[] = [];
@@ -706,6 +897,8 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       }
       const foldersFor = (a: Addon) => newFolders.get(a.id) ?? [];
       const allNew = uniqueFolders(targets.flatMap(foldersFor));
+      const dependencies = uniqueDependencies(targets.flatMap((a) => dependenciesOf.get(a.id) ?? []));
+      const written = uniqueFolders([...allNew, ...dependencyFolders(dependencies)]);
       const targetIds = new Set(targets.map((a) => a.id));
       const others = (list: Addon[]) => list.filter((a) => !targetIds.has(a.id));
 
@@ -714,7 +907,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         const notes = warnings.map((w) => `warning: ${w}`);
         if (unlearned.length > 0) {
           notes.unshift(
-            `skipped, their release could not be downloaded to see which folders it writes: ${unlearned.map((a) => a.name).join(", ")}`,
+            `skipped, the folders their release or a required dependency writes could not be learned: ${unlearned.map((a) => a.name).join(", ")}`,
           );
         }
         if (args.all === true && mismatched.length > 0) {
@@ -732,10 +925,10 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
             ...targets.map((a) => lineOf(a)),
             ...others(droppedUnknowns(installed, allNew)).map((a) => lineOf(a)),
           ],
-          foldersReplaced: onDisk([...targets.flatMap(foldersOf), ...allNew], disk),
+          foldersReplaced: onDisk([...targets.flatMap(foldersOf), ...written], disk),
           settingsCarryOver: combineCarryOver(targets.map((a) => carryOver(foldersOf(a), foldersFor(a)))),
         };
-        return preview;
+        return withDependencies(preview, dependencies);
       }
 
       if (targets.length === 0) {
@@ -746,8 +939,8 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         ctx,
         "update_addons",
         installation,
-        [...targets, ...others(claimants(installed, allNew))],
-        allNew,
+        [...targets, ...others(claimants(installed, written))],
+        written,
         `update_addons ${listNames(targets.map((a) => `${a.name} ${ver(a.installedVersion)} -> ${ver(a.latestVersion)}`))}`,
       );
       const failed: { addonId: string; name: string; error: string }[] = [];
@@ -840,6 +1033,14 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       const plan = await planInstall(installation, providerArg, externalId, str(args, "version"), ctx);
       refuseOther(plan.line.provider, plan.line.externalId);
       const folders = plan.line.folders;
+      // The old addon is removed before the install, so WowUp installs it again when the release requires it
+      const dependencies = await dependenciesOfPlan(
+        installation,
+        plan,
+        installed.filter((a) => a.id !== old.id),
+        ctx,
+      );
+      const written = uniqueFolders([...folders, ...dependencyFolders(dependencies)]);
 
       if (args.preview === true) {
         const disk = await diskOf(installation);
@@ -848,10 +1049,10 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
           installation: nameOf(installation),
           add: [plan.line],
           remove: [lineOf(old), ...droppedUnknowns(installed, folders, old).map((a) => lineOf(a))],
-          foldersReplaced: onDisk([...foldersOf(old), ...folders], disk),
+          foldersReplaced: onDisk([...foldersOf(old), ...written], disk),
           settingsCarryOver: carryOver(foldersOf(old), folders),
         };
-        return withDependencies(preview, plan, installed);
+        return withDependencies(preview, dependencies);
       }
 
       const addon = await newAddonFor(installation, plan);
@@ -859,8 +1060,8 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         ctx,
         "replace_addon",
         installation,
-        [old, ...claimants(installed, folders).filter((a) => a.id !== old.id)],
-        folders,
+        [old, ...claimants(installed, written).filter((a) => a.id !== old.id)],
+        written,
         `replace_addon ${old.name} ${ver(old.installedVersion)} with ${plan.line.provider} ${plan.line.externalId} ${plan.line.name} ${ver(plan.line.version)}`,
       );
       const { added } = await runChange(
@@ -905,6 +1106,9 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
 
       const plan = await planInstall(installation, ext.providerName, ext.id, undefined, ctx);
       const folders = plan.line.folders;
+      // WowUp's setProvider installs the new one (and its dependencies) before it removes the old record
+      const dependencies = await dependenciesOfPlan(installation, plan, installed, ctx);
+      const written = uniqueFolders([...folders, ...dependencyFolders(dependencies)]);
 
       if (args.preview === true) {
         const disk = await diskOf(installation);
@@ -913,18 +1117,18 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
           installation: nameOf(installation),
           add: [plan.line],
           remove: [lineOf(addon)],
-          foldersReplaced: onDisk(folders, disk),
+          foldersReplaced: onDisk(written, disk),
           settingsCarryOver: carryOver(foldersOf(addon), folders),
         };
-        return preview;
+        return withDependencies(preview, dependencies);
       }
 
       const backup = await takeBackup(
         ctx,
         "switch_provider",
         installation,
-        [addon, ...claimants(installed, folders).filter((a) => a.id !== addon.id)],
-        folders,
+        [addon, ...claimants(installed, written).filter((a) => a.id !== addon.id)],
+        written,
         `switch_provider ${addon.name} ${addon.providerName ?? ""} ${addon.externalId ?? ""} -> ${ext.providerName} ${ext.id}`,
       );
       ctx.progress(`Switching ${addon.name} to ${ext.providerName}`);
@@ -1083,9 +1287,12 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       const conflicts = summary.comparisons.filter((c) => c.state === "conflict").length;
       const same = summary.comparisons.filter((c) => c.state === "no-change").length;
 
-      // WowUp's import installs each addon's latest file, so that is what the preview and backup cover. One that
-      // can't be looked up fails the call before any backup; one whose release can't be downloaded to learn its
-      // folders is left out of the import (skipped, unchanged); one the provider doesn't have installs nothing.
+      // WowUp's import installs each addon's latest file and then its required dependencies, so that is what the
+      // preview and backup cover. One that can't be looked up fails the call before any backup; one whose release
+      // or dependencies can't be downloaded to learn their folders is left out of the import (skipped, unchanged);
+      // one the provider doesn't have installs nothing.
+      const installed = await recordsOf(installation);
+      const planner = dependencyPlanner(installation, installed, ctx);
       const planned = await Promise.all(
         toAdd.map(async (c) => {
           let result: AddonSearchResult | undefined;
@@ -1098,7 +1305,10 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
           }
           const file = result ? getLatestFile(result, installation.defaultAddonChannelType) : undefined;
           const name = result?.name ?? c.imported.name;
+          const provider = result?.providerName ?? c.imported.provider_name;
+          const externalId = result ? String(result.externalId) : c.imported.id;
           let folders: string[] | { error: string } = [];
+          let dependencies: Dependency[] = [];
           if (file) {
             const release = {
               provider: c.imported.provider_name,
@@ -1107,16 +1317,20 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
               version: file.version,
               url: file.downloadUrl,
             };
-            folders = await batchFolders(() => learnFolders(file.folders, release, ctx));
+            folders = await batchFolders(async () => {
+              const own = await learnFolders(file.folders, release, ctx);
+              dependencies = await planner(provider, file.dependencies, [{ provider, externalId }]);
+              return own;
+            });
           }
           const line: AddonLine = {
             name,
-            provider: result?.providerName ?? c.imported.provider_name,
-            externalId: result ? String(result.externalId) : c.imported.id,
+            provider,
+            externalId,
             version: file?.version ?? "",
             folders: Array.isArray(folders) ? folders : [],
           };
-          return { comparison: c, line, error: Array.isArray(folders) ? undefined : folders.error };
+          return { comparison: c, line, dependencies, error: Array.isArray(folders) ? undefined : folders.error };
         }),
       );
       const kept = planned.filter((p) => p.error === undefined);
@@ -1124,11 +1338,19 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       const skipped = planned
         .filter((p) => p.error !== undefined)
         .map((p) => ({ name: p.line.name, provider: p.line.provider, externalId: p.line.externalId, reason: p.error }));
-      const installed = await recordsOf(installation);
       const folders = uniqueFolders(lines.flatMap((l) => l.folders));
+      const allDependencies = uniqueDependencies(kept.flatMap((p) => p.dependencies));
+      const written = uniqueFolders([...folders, ...dependencyFolders(allDependencies)]);
+      // One that is also imported is in `add`
+      const lineKeys = new Set(lines.map((l) => dependencyKey(l.provider, l.externalId)));
+      const dependencies = allDependencies.filter(
+        (d) =>
+          !lineKeys.has(dependencyKey(d.line.provider, d.line.externalId)) &&
+          !lineKeys.has(dependencyKey(d.line.provider, d.recordExternalId)),
+      );
       const skippedNote =
         skipped.length > 0
-          ? `; skipped, their release could not be downloaded to see which folders it writes: ${skipped.map((s) => `${s.provider} ${s.externalId}`).join(", ")}`
+          ? `; skipped, the folders their release or a required dependency writes could not be learned: ${skipped.map((s) => `${s.provider} ${s.externalId}`).join(", ")}`
           : "";
       const action = `import_addons: installs ${lines.length} addon(s); ${same} already installed; ${conflicts} conflict(s) left as they are${skippedNote}`;
 
@@ -1139,10 +1361,10 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
           installation: nameOf(installation),
           add: lines,
           remove: droppedUnknowns(installed, folders).map((a) => lineOf(a)),
-          foldersReplaced: onDisk(folders, disk),
+          foldersReplaced: onDisk(written, disk),
           settingsCarryOver: installCarryOver(folders, disk, droppedUnknowns(installed, folders)),
         };
-        return preview;
+        return withDependencies(preview, dependencies);
       }
       if (lines.length === 0) {
         return { changed: [], ...(skipped.length > 0 ? { skipped } : {}), note: `Nothing to import: ${action}.` };
@@ -1152,8 +1374,8 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         ctx,
         "import_addons",
         installation,
-        claimants(installed, folders),
-        folders,
+        claimants(installed, written),
+        written,
         `import_addons ${listNames(lines.map((l) => `${l.provider} ${l.externalId} ${l.name}`))}`,
       );
       // WowUp installs the summary's "added" entries; the skipped ones are taken out

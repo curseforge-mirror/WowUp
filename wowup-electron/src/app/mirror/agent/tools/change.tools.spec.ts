@@ -1093,22 +1093,216 @@ describe("change tools", () => {
         }),
       ],
     });
+    const lib = searchResult({
+      name: "LibFoo",
+      externalId: "500",
+      files: [file({ externalId: "l1", version: "1.0", folders: ["LibFoo"] })],
+    });
     // Alpha (Curse 1) is installed already, so WowUp skips it; the optional one isn't installed
-    const m = make({ records: [rec({ id: "a1" })], result: withDeps });
+    const m = make({ records: [rec({ id: "a1" })], results: { "12345": withDeps, "500": lib, "1": alphaRelease() } });
     const preview: any = await m.tools.install_addon({ provider: "Curse", externalId: "12345", preview: true }, m.ctx);
-    expect(preview.alsoInstalls).toEqual([{ provider: "Curse", externalId: "500" }]);
+    expect(preview.alsoInstalls).toEqual([
+      { name: "LibFoo", provider: "Curse", externalId: "500", version: "1.0", folders: ["LibFoo"] },
+    ]);
     expect(preview.action).toMatch(/may also install 1 required dependency: Curse 500/);
 
+    // replacing Alpha removes it first, so WowUp installs it again as a dependency
     const replaced: any = await m.tools.replace_addon(
       { addonId: "a1", provider: "Curse", externalId: "12345", preview: true },
       m.ctx,
     );
-    expect(replaced.alsoInstalls).toEqual([{ provider: "Curse", externalId: "500" }]);
+    expect(replaced.alsoInstalls.map((d: any) => `${d.provider} ${d.externalId} ${d.folders}`)).toEqual([
+      "Curse 500 LibFoo",
+      "Curse 1 Alpha",
+    ]);
 
     const none: any = await make().tools.install_addon(
       { provider: "Curse", externalId: "12345", preview: true },
       m.ctx,
     );
     expect(none.alsoInstalls).toBeUndefined();
+  });
+
+  describe("required dependencies WowUp installs along", () => {
+    const req = (...ids: string[]) => ids.map((externalAddonId) => ({ externalAddonId, type: 2 }));
+    /** A Wago release: Wago lists no folders, so its zip is downloaded to learn them */
+    const wago = (id: string, name: string, over: any = {}): any =>
+      searchResult({
+        name,
+        providerName: "Wago",
+        externalId: id,
+        files: [
+          file({
+            externalId: `${id}-f`,
+            version: "1.0",
+            folders: [],
+            downloadUrl: `https://wago.test/${id}.zip`,
+            ...over,
+          }),
+        ],
+      });
+    // TipTac requires LibStack (and lists an optional addon); LibStack requires LibBar and TipTac itself
+    const results = {
+      w9: wago("w9", "TipTac", { dependencies: [...req("w500"), { externalAddonId: "w600", type: 3 }] }),
+      w500: wago("w500", "LibStack", { dependencies: req("w501", "w9") }),
+      w501: wago("w501", "LibBar", { folders: ["LibBar"] }),
+      w8: wago("w8", "Broken", { dependencies: req("w404") }),
+      w404: wago("w404", "LibGone"),
+    };
+    const zips = {
+      "https://wago.test/w9.zip": ["TipTac"],
+      "https://wago.test/w500.zip": ["LibStub", "LibFoo"],
+      "https://wago.test/w8.zip": ["Broken"],
+    };
+    // Other bundles LibStub, which LibStack's zip overwrites; WowUp can't tell, Wago lists no folders
+    const other = rec({
+      id: "o1",
+      name: "Other",
+      providerName: "Wago",
+      externalId: "w2",
+      installedFolderList: ["Other", "LibStub"],
+    });
+    const disk = ["Other", "LibStub", "LibBar"];
+    const everything = ["TipTac", "LibStub", "LibFoo", "LibBar"];
+    const libLines = [
+      { name: "LibStack", provider: "Wago", externalId: "w500", version: "1.0", folders: ["LibStub", "LibFoo"] },
+      { name: "LibBar", provider: "Wago", externalId: "w501", version: "1.0", folders: ["LibBar"] },
+    ];
+
+    it("install_addon previews and backs up the folders they write", async () => {
+      const p = make({ records: [other], disk, results, zips });
+      const preview: any = await p.tools.install_addon({ provider: "Wago", externalId: "w9", preview: true }, p.ctx);
+      expect(preview.alsoInstalls).toEqual(libLines);
+      expect(preview.foldersReplaced).toEqual(["LibStub", "LibBar"]);
+      expect(preview.action).toMatch(/may also install 2 required dependencies: Wago w500, Wago w501/);
+      mutators(p).forEach((spy) => expect(spy).not.toHaveBeenCalled());
+
+      const m = make({ records: [other], disk, results, zips });
+      await m.tools.install_addon({ provider: "Wago", externalId: "w9" }, m.ctx);
+      expect(m.backupService.create).toHaveBeenCalledOnceWith(
+        "install_addon",
+        INSTALL,
+        [jasmine.objectContaining({ id: "o1" })],
+        everything,
+        jasmine.any(String),
+      );
+    });
+
+    it("a dependency whose folders can't be learned stops the change before the backup", async () => {
+      const broken = make({ records: [other], disk, results, zips: { "https://wago.test/w9.zip": ["TipTac"] } });
+      await expectAsync(
+        broken.tools.install_addon({ provider: "Wago", externalId: "w9" }, broken.ctx),
+      ).toBeRejectedWithError(/Could not download LibStack 1\.0 .*required dependency.*Nothing was changed\.$/);
+      mutators(broken).forEach((spy) => expect(spy).not.toHaveBeenCalled());
+      expect(broken.addonService.getAddon).not.toHaveBeenCalled();
+
+      const unreachable = make({ records: [other], disk, results, zips });
+      unreachable.provider.getById.and.callFake(async (id: string) => {
+        if (id === "w501") {
+          throw new Error("503");
+        }
+        return (results as any)[id];
+      });
+      await expectAsync(
+        unreachable.tools.install_addon({ provider: "Wago", externalId: "w9" }, unreachable.ctx),
+      ).toBeRejectedWithError(/Could not look up Wago w501.*503.*Nothing was changed\./);
+      mutators(unreachable).forEach((spy) => expect(spy).not.toHaveBeenCalled());
+    });
+
+    it("replace_addon and switch_provider back them up too", async () => {
+      const old = rec({
+        id: "a1",
+        name: "TipTac Classic",
+        installedFolderList: ["TipTac"],
+        externalIds: [{ providerName: "Wago", id: "w9" }],
+      });
+      const r = make({ records: [old, other], disk: [...disk, "TipTac"], results, zips });
+      const preview: any = await r.tools.replace_addon(
+        { addonId: "a1", provider: "Wago", externalId: "w9", preview: true },
+        r.ctx,
+      );
+      expect(preview.alsoInstalls).toEqual(libLines);
+      expect(preview.foldersReplaced).toEqual(["TipTac", "LibStub", "LibBar"]);
+      await r.tools.replace_addon({ addonId: "a1", provider: "Wago", externalId: "w9" }, r.ctx);
+      const [, , replacedRecords, replacedFolders] = r.backupService.create.calls.mostRecent().args;
+      expect(replacedRecords.map((a: any) => a.id)).toEqual(["a1", "o1"]);
+      expect(replacedFolders).toEqual(everything);
+
+      const s = make({ records: [old, other], disk: [...disk, "TipTac"], results, zips });
+      const switched: any = await s.tools.switch_provider({ addonId: "a1", provider: "Wago", preview: true }, s.ctx);
+      expect(switched.alsoInstalls).toEqual(libLines);
+      expect(switched.foldersReplaced).toEqual(["TipTac", "LibStub", "LibBar"]);
+      await s.tools.switch_provider({ addonId: "a1", provider: "Wago" }, s.ctx);
+      const [, , switchedRecords, switchedFolders] = s.backupService.create.calls.mostRecent().args;
+      expect(switchedRecords.map((a: any) => a.id)).toEqual(["a1", "o1"]);
+      expect(switchedFolders).toEqual(everything);
+    });
+
+    it("update_addons backs up the ones a newer release requires, and skips a target whose ones can't be learned", async () => {
+      const tipTac = rec({
+        id: "t1",
+        name: "TipTac",
+        providerName: "Wago",
+        externalId: "w9",
+        latestVersion: "2.0",
+        downloadUrl: "https://wago.test/w9.zip",
+        installedFolderList: ["TipTac"],
+        dependencies: req("w500"),
+      });
+      const broken = rec({
+        id: "t2",
+        name: "Broken",
+        providerName: "Wago",
+        externalId: "w8",
+        latestVersion: "2.0",
+        downloadUrl: "https://wago.test/w8.zip",
+        installedFolderList: ["Broken"],
+        dependencies: req("w404"),
+      });
+      const m = make({ records: [tipTac, broken, other], disk: [...disk, "TipTac", "Broken"], results, zips });
+
+      const preview: any = await m.tools.update_addons({ addonIds: ["t1", "t2"], preview: true }, m.ctx);
+      expect(preview.add.map((l: any) => l.name)).toEqual(["TipTac"]);
+      expect(preview.alsoInstalls).toEqual(libLines);
+      expect(preview.foldersReplaced).toEqual(["TipTac", "LibStub", "LibBar"]);
+      expect(preview.action).toMatch(/skipped.*Broken/);
+
+      const out: any = await m.tools.update_addons({ addonIds: ["t1", "t2"] }, m.ctx);
+      expect(m.addonService.updateAddon.calls.allArgs().map((a: any[]) => a[0].id)).toEqual(["t1"]);
+      const [, , records, folders] = m.backupService.create.calls.mostRecent().args;
+      expect(records.map((a: any) => a.id)).toEqual(["t1", "o1"]);
+      expect(folders).toEqual(everything);
+      expect(out.skipped).toEqual([
+        {
+          addonId: "t2",
+          name: "Broken",
+          reason: jasmine.stringMatching(
+            /Could not download LibGone .*required dependency.*nothing was changed for it/i,
+          ),
+        },
+      ]);
+    });
+
+    it("import_addons backs up the ones its addons require", async () => {
+      const m = make({ records: [other], disk, results, zips });
+      m.brokerService.installImportSummary.and.callFake(async () => {
+        await m.addonService.saveAddon(
+          rec({ id: "imp", name: "TipTac", providerName: "Wago", externalId: "w9", installedFolderList: ["TipTac"] }),
+        );
+      });
+      const json = JSON.stringify({
+        client_type: "ClassicEra",
+        addons: [{ id: "w9", name: "TipTac", provider_name: "Wago" }],
+      });
+
+      const preview: any = await m.tools.import_addons({ text: json, preview: true }, m.ctx);
+      expect(preview.alsoInstalls).toEqual(libLines);
+      expect(preview.foldersReplaced).toEqual(["LibStub", "LibBar"]);
+
+      await m.tools.import_addons({ text: json }, m.ctx);
+      const [, , records, folders] = m.backupService.create.calls.mostRecent().args;
+      expect(records.map((a: any) => a.id)).toEqual(["o1"]);
+      expect(folders).toEqual(everything);
+    });
   });
 });

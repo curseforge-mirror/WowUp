@@ -137,6 +137,17 @@ rollback time: the same id, else the same provider and externalId in that instal
 replacement is kept as it is, and an addon removed since gets nothing back (no record claiming folders that are gone);
 the result lists it under `skipped`. The safety backup of such a rollback is a settings backup too.
 
+An install also writes the folders of the required dependencies WowUp installs after it (`installDependencies`), so
+`install_addon`, `replace_addon`, `switch_provider`, `import_addons` and `update_addons` work those out before the
+backup the way WowUp does: the release's (for an update, the record's) required dependencies at its provider that no
+record installed then has as provider and externalId or among its externalIds (for `replace_addon`, without the addon
+it removes first), and theirs in turn. Each one's folders come from the provider's file listing, or for a placeholder
+or empty listing (GitHub, Zip, Wago, WowInterface) from a sandbox download, a few at a time with WowUp's retries. The
+backup copies those folders too, with the records that claim them; previews list the dependencies under `alsoInstalls`
+with their folders and count the ones on disk in `foldersReplaced`. When a dependency's folders can't be learned, a
+single change fails before its backup with nothing changed, and a batch (`update_addons`, `import_addons`) leaves that
+target out, as it does for a release it can't download.
+
 A backup is pruned only when it is both older than 30 days and outside the newest 50.
 
 **Sandbox.** `<WowUp user data>/agent-sandbox/<provider>-<id>-<version>/`, cleared when WowUp starts. Results carry

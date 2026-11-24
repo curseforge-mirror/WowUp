@@ -90,6 +90,10 @@ const DESTRUCTIVE: AgentToolAnnotations = { readOnlyHint: false, destructiveHint
 const CHANGE_NOTE =
   " Takes a backup first and returns its id (backupId); use rollback to undo. Pass preview: true to see the effect without changing anything.";
 
+/** For the tools whose installs pull in required dependencies */
+const DEPENDENCY_NOTE =
+  " WowUp also installs the required dependencies that aren't installed yet; the preview lists them with their folders (alsoInstalls) and the backup covers what they overwrite.";
+
 export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "list_installations",
@@ -273,6 +277,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
     annotations: DESTRUCTIVE,
     description:
       "Install an addon from a provider into an installation. With a version, installs that file and marks the addon ignored so it is not auto-updated." +
+      DEPENDENCY_NOTE +
       CHANGE_NOTE,
     inputSchema: schema(
       { provider: PROVIDER, externalId: EXTERNAL_ID, version: VERSION, installation: INSTALLATION, preview: PREVIEW },
@@ -282,7 +287,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "update_addons",
     annotations: DESTRUCTIVE,
-    description: "Update the given installed addons, or all addons that have updates." + CHANGE_NOTE,
+    description: "Update the given installed addons, or all addons that have updates." + DEPENDENCY_NOTE + CHANGE_NOTE,
     inputSchema: schema({
       installation: INSTALLATION,
       addonIds: strList("Ids of installed addons to update."),
@@ -308,6 +313,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
     annotations: DESTRUCTIVE,
     description:
       "Replace an installed addon (addonId, or installedProvider and installedExternalId) with another addon or release, given by provider and externalId (removes the old one, installs the new one). Preview reports whether settings carry over (same folders) or not." +
+      DEPENDENCY_NOTE +
       CHANGE_NOTE,
     inputSchema: schema(
       {
@@ -330,6 +336,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
     annotations: DESTRUCTIVE,
     description:
       "Move an installed addon (addonId, or installedProvider and installedExternalId) to another provider it is already known on (uses its recorded externalIds)." +
+      DEPENDENCY_NOTE +
       CHANGE_NOTE,
     inputSchema: schema(
       {
@@ -387,7 +394,10 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "import_addons",
     annotations: DESTRUCTIVE,
-    description: "Install the addons listed in a WowUp export string or JSON into an installation." + CHANGE_NOTE,
+    description:
+      "Install the addons listed in a WowUp export string or JSON into an installation." +
+      DEPENDENCY_NOTE +
+      CHANGE_NOTE,
     inputSchema: schema(
       { text: str("WowUp export string or its JSON."), installation: INSTALLATION, preview: PREVIEW },
       ["text"],
