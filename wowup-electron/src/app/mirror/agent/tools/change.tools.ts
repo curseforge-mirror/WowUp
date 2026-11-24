@@ -106,7 +106,7 @@ export interface ChangeDeps extends Omit<ReleaseFolderDeps, "getProvider"> {
       extraFolders?: string[],
       summary?: string,
       options?: { recordsOnly?: boolean; restoreMode?: "records" | "settings" },
-    ): Promise<{ id: string }>;
+    ): Promise<{ id: string; recordIdsAtBackup?: string[] }>;
     recordAdded(id: string, added: Addon[]): Promise<void>;
   };
   installService: InstallationNameDeps["installService"];
@@ -132,6 +132,12 @@ interface InstallPlan {
   file: AddonSearchResultFile;
   pinned: boolean;
   line: AddonLine;
+}
+
+/** A change's backup, with the ids of the installation's records when it was taken */
+interface TakenBackup {
+  id: string;
+  baselineIds?: string[];
 }
 
 /** A required dependency WowUp installs along with a release */
@@ -369,13 +375,27 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
   };
   const INSTALLED_KEYS = { provider: "installedProvider", externalId: "installedExternalId" };
 
-  /** The backup before a change, taken once no sync of WowUp's can rewrite the records it holds */
+  /**
+   * The backup before a change, taken once no sync of WowUp's can rewrite the records it holds. With it the ids of
+   * the installation's records then (the backup's own list, else read right after it): a record WowUp saved while
+   * the call waited, such as its auto-update installing a dependency the call then finds installed, is no record
+   * the change made.
+   */
   const takeBackup = async (
     ctx: AgentToolContext,
     ...args: Parameters<ChangeDeps["backupService"]["create"]>
-  ): Promise<{ id: string }> => {
+  ): Promise<TakenBackup> => {
     await deps.whenIdle?.(ctx);
-    return backupService.create(...args);
+    const backup = await backupService.create(...args);
+    let baselineIds = backup.recordIdsAtBackup;
+    if (!Array.isArray(baselineIds)) {
+      try {
+        baselineIds = (await recordsOf(args[1])).map((a) => a.id);
+      } catch (e) {
+        console.error("[agent] could not read the records after the backup; using the ones read before it", e);
+      }
+    }
+    return { id: backup.id, baselineIds };
   };
 
   /** Install progress as "Downloading TipTac Reborn 25%" */
@@ -678,14 +698,15 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
    * hourly auto-update running meanwhile, is not the change's to undo: it is left out (`byWowUp`).
    */
   const runChange = async (
-    backupId: string,
+    backup: TakenBackup,
     installation: WowInstallation,
     before: Addon[],
     what: string,
     ours: (a: Addon) => boolean,
     work: () => Promise<void>,
   ): Promise<{ added: Addon[]; after: Addon[]; byWowUp: Addon[] }> => {
-    const beforeIds = new Set(before.map((a) => a.id));
+    const beforeIds = new Set(backup.baselineIds ?? before.map((a) => a.id));
+    const backupId = backup.id;
     let failure: unknown;
     try {
       await work();
@@ -852,7 +873,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         `install_addon ${plan.line.provider} ${plan.line.externalId} ${plan.line.name} ${ver(plan.line.version)}`,
       );
       const { added, byWowUp } = await runChange(
-        backup.id,
+        backup,
         installation,
         installed,
         `Installing ${plan.line.name}`,
@@ -994,7 +1015,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       const failed: { addonId: string; name: string; error: string }[] = [];
       // An update makes no record of its own (it keeps the addon's), only the dependencies it installs along
       const { after, added, byWowUp } = await runChange(
-        backup.id,
+        backup,
         installation,
         installed,
         "Updating addons",
@@ -1064,7 +1085,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       ctx.progress(`Removing ${addon.name}`);
       // A removal makes no record
       const { byWowUp } = await runChange(
-        backup.id,
+        backup,
         installation,
         installed,
         `Removing ${addon.name}`,
@@ -1128,7 +1149,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         `replace_addon ${old.name} ${ver(old.installedVersion)} with ${plan.line.provider} ${plan.line.externalId} ${plan.line.name} ${ver(plan.line.version)}`,
       );
       const { added, byWowUp } = await runChange(
-        backup.id,
+        backup,
         installation,
         installed,
         `Replacing ${old.name} with ${plan.line.name}`,
@@ -1202,7 +1223,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       ctx.progress(`Switching ${addon.name} to ${ext.providerName}`);
       // setProvider makes the new record itself (its id isn't known here), from the provider and externalId
       const { added, byWowUp } = await runChange(
-        backup.id,
+        backup,
         installation,
         installed,
         `Switching ${addon.name} to ${ext.providerName}`,
@@ -1246,7 +1267,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       );
       // A settings change makes no record
       const { byWowUp } = await runChange(
-        backup.id,
+        backup,
         installation,
         installed,
         `Turning auto-update ${state} for ${addon.name}`,
@@ -1293,7 +1314,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       );
       // A settings change makes no record
       const { byWowUp } = await runChange(
-        backup.id,
+        backup,
         installation,
         installed,
         `Marking ${addon.name}`,
@@ -1333,7 +1354,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       ctx.progress(`Rescanning ${nameOf(installation)}`);
       // A rescan re-creates every record of the installation, so every new one is its own
       const { after } = await runChange(
-        backup.id,
+        backup,
         installation,
         installed,
         `Rescanning ${nameOf(installation)}`,
@@ -1494,7 +1515,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       let byWowUp: Addon[];
       try {
         ({ added, byWowUp } = await runChange(
-          backup.id,
+          backup,
           installation,
           installed,
           "Importing addons",

@@ -1418,8 +1418,12 @@ describe("change tools", () => {
     it("remove_addon, set_auto_update and set_ignored note none, and rescan notes every new record", async () => {
       for (const tool of ["remove_addon", "set_auto_update", "set_ignored"]) {
         const m = make({ records: [rec({ id: "a1" })] });
-        // WowUp's auto-update saves another addon right before the backup is taken
-        m.whenIdle.and.callFake(async () => m.addRecord(stray));
+        // WowUp's auto-update saves another addon while the change runs
+        m.addonService.removeAddon.and.callFake(async () => m.addRecord(stray));
+        m.addonService.saveAddon.and.callFake(async (a: any) => {
+          m.addRecord(a);
+          m.addRecord(stray);
+        });
         const args = tool === "remove_addon" ? { addonId: "a1" } : { addonId: "a1", enabled: false, ignored: true };
 
         const out: any = await m.tools[tool](args, m.ctx);
@@ -1434,6 +1438,33 @@ describe("change tools", () => {
       const out: any = await r.tools.rescan({}, r.ctx);
       expect(noted(r).sort()).toEqual(["a1-scanned", "wowup1-scanned"]);
       expect(out.changedByWowUp).toBeUndefined();
+    });
+
+    it("a record WowUp saves before the backup is taken isn't the call's, even for a dependency it plans", async () => {
+      const m = make({ results: { "12345": requiresLib, "500": lib } });
+      // while the call waits for WowUp to go idle, WowUp's own auto-update installs LibFoo; the call's install then
+      // finds it installed and doesn't install it again
+      m.whenIdle.and.callFake(async () => m.addRecord(libRecord));
+      m.addonService.installAddon.and.callFake(async (a: any) => {
+        m.addRecord({ ...a, installedVersion: a.latestVersion, installedFolderList: ["TipTac", "TipTacOptions"] });
+      });
+
+      const out: any = await m.tools.install_addon({ provider: "Curse", externalId: "12345" }, m.ctx);
+
+      expect(noted(m)).toEqual(["new1"]);
+      expect(out.changedByWowUp).toBeUndefined();
+
+      // the backup's own list of the records there when it was taken is that baseline
+      const b = make({ results: { "12345": requiresLib, "500": lib } });
+      b.backupService.create.and.callFake(async () => {
+        b.addRecord(libRecord);
+        return { id: "b1", recordIdsAtBackup: ["dep1"] };
+      });
+      b.addonService.installAddon.and.callFake(async (a: any) => {
+        b.addRecord({ ...a, installedVersion: a.latestVersion, installedFolderList: ["TipTac", "TipTacOptions"] });
+      });
+      await b.tools.install_addon({ provider: "Curse", externalId: "12345" }, b.ctx);
+      expect(noted(b)).toEqual(["new1"]);
     });
 
     it("a dependency WowUp can't download still leaves a record, and that record is the call's", async () => {

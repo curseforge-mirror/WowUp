@@ -158,7 +158,10 @@ provider and externalId when WowUp makes the record itself) and those of the dep
 backup (by provider and externalId). An update makes no record of its own, only its dependencies'; a removal or a
 settings change makes none. Any other record that appeared is left out of the backup and listed in the result under
 `changedByWowUp` ("changed by WowUp during this change, not included in the backup"). A rescan re-creates every
-record, so all the installation's new records are its own.
+record, so all the installation's new records are its own. "Appeared" is counted from the records there when the
+backup was taken (its `recordIdsAtBackup`), not from when the call started: a record WowUp saved while the call waited
+for its update check to finish (say its auto-update installing a dependency the call then finds installed) is not the
+change's, so rollback doesn't take it away from the folders it restores.
 
 A backup is pruned only when it is both older than 30 days and outside the newest 50.
 
