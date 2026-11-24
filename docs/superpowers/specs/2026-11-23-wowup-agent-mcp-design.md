@@ -148,6 +148,15 @@ with their folders and count the ones on disk in `foldersReplaced`. When a depen
 single change fails before its backup with nothing changed, and a batch (`update_addons`, `import_addons`) leaves that
 target out, as it does for a release it can't download.
 
+A backup notes what its change added (`added`), which rollback removes, by what the call itself made, not by every
+record that appeared while it ran: WowUp's own hourly auto-update isn't blocked and can save records meanwhile. Only
+the records the change created go in: the addon an install, replace, switch or import produced (by its id, or by
+provider and externalId when WowUp makes the record itself) and those of the dependencies worked out before the
+backup (by provider and externalId). An update makes no record of its own, only its dependencies'; a removal or a
+settings change makes none. Any other record that appeared is left out of the backup and listed in the result under
+`changedByWowUp` ("changed by WowUp during this change, not included in the backup"). A rescan re-creates every
+record, so all the installation's new records are its own.
+
 A backup is pruned only when it is both older than 30 days and outside the newest 50.
 
 **Sandbox.** `<WowUp user data>/agent-sandbox/<provider>-<id>-<version>/`, cleared when WowUp starts. Results carry

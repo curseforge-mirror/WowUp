@@ -88,7 +88,7 @@ const RECORD_CHANGE: AgentToolAnnotations = { readOnlyHint: false, destructiveHi
 const DESTRUCTIVE: AgentToolAnnotations = { readOnlyHint: false, destructiveHint: true };
 
 const CHANGE_NOTE =
-  " Takes a backup first and returns its id (backupId); use rollback to undo. Pass preview: true to see the effect without changing anything.";
+  " Takes a backup first and returns its id (backupId); use rollback to undo. Addons WowUp itself adds while the change runs (its own auto-update) are listed under changedByWowUp and aren't part of the backup. Pass preview: true to see the effect without changing anything.";
 
 /** For the tools whose installs pull in required dependencies */
 const DEPENDENCY_NOTE =

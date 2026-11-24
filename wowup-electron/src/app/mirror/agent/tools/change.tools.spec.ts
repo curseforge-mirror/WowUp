@@ -255,6 +255,8 @@ describe("change tools", () => {
       ctx,
       log,
       records: () => records,
+      /** Saves a record the way WowUp itself does, outside the tools */
+      addRecord: (a: any) => upsert(a),
       sandboxLeft: () => Object.keys(unzipped),
     };
   };
@@ -1303,6 +1305,135 @@ describe("change tools", () => {
       const [, , records, folders] = m.backupService.create.calls.mostRecent().args;
       expect(records.map((a: any) => a.id)).toEqual(["o1"]);
       expect(folders).toEqual(everything);
+    });
+  });
+
+  describe("records WowUp itself adds while a change runs", () => {
+    /** What WowUp's hourly auto-update can save meanwhile: an addon this call didn't install */
+    const stray = rec({
+      id: "wowup1",
+      name: "Stray",
+      providerName: "Curse",
+      externalId: "999",
+      installedFolderList: ["Stray"],
+    });
+    const strayLine = {
+      change: "added",
+      addonId: "wowup1",
+      name: "Stray",
+      provider: "Curse",
+      externalId: "999",
+      version: "1.0",
+    };
+    const byWowUp = { addons: [strayLine], note: jasmine.stringMatching(/WowUp .*not included in the backup/) };
+    // TipTac (Curse 12345) requires LibFoo (Curse 500)
+    const requiresLib = searchResult({ files: [file({ dependencies: [{ externalAddonId: "500", type: 2 }] })] });
+    const lib = searchResult({
+      name: "LibFoo",
+      externalId: "500",
+      files: [file({ externalId: "l1", version: "1.0", folders: ["LibFoo"] })],
+    });
+    const libRecord = rec({ id: "dep1", name: "LibFoo", externalId: "500", installedFolderList: ["LibFoo"] });
+    const noted = (m: ReturnType<typeof make>) =>
+      m.backupService.recordAdded.calls.allArgs().flatMap(([, added]: any[]) => added.map((a: any) => a.id));
+
+    it("install_addon and replace_addon note only their addon and its dependencies in the backup", async () => {
+      for (const tool of ["install_addon", "replace_addon"]) {
+        const m = make({
+          records: [rec({ id: "a1", installedFolderList: ["Alpha"] })],
+          results: { "12345": requiresLib, "500": lib },
+        });
+        m.addonService.installAddon.and.callFake(async (a: any) => {
+          m.addRecord({ ...a, installedVersion: a.latestVersion, installedFolderList: ["TipTac", "TipTacOptions"] });
+          // WowUp installs the dependency, and its own auto-update saves another addon meanwhile
+          m.addRecord(libRecord);
+          m.addRecord(stray);
+        });
+        const args =
+          tool === "install_addon"
+            ? { provider: "Curse", externalId: "12345" }
+            : { addonId: "a1", provider: "Curse", externalId: "12345" };
+
+        const out: any = await m.tools[tool](args, m.ctx);
+
+        expect(noted(m)).withContext(tool).toEqual(["new1", "dep1"]);
+        expect(out.changed.filter((c: any) => c.change === "added").map((c: any) => c.addonId))
+          .withContext(tool)
+          .toEqual(["new1", "dep1"]);
+        expect(out.changedByWowUp).withContext(tool).toEqual(byWowUp);
+      }
+    });
+
+    it("switch_provider and import_addons note only the records they installed", async () => {
+      const s = make({ records: [rec({ id: "a1", externalIds: [{ providerName: "Wago", id: "w1" }] })] });
+      s.addonService.setProvider.and.callFake(async (a: any, externalId: string, provider: string) => {
+        s.addRecord({ ...a, id: "switched", providerName: provider, externalId });
+        s.addRecord(stray);
+      });
+      const switched: any = await s.tools.switch_provider({ addonId: "a1", provider: "Wago" }, s.ctx);
+      expect(noted(s)).toEqual(["switched"]);
+      expect(switched.changedByWowUp).toEqual(byWowUp);
+
+      const i = make({ results: { "12345": requiresLib, "500": lib } });
+      i.brokerService.installImportSummary.and.callFake(async () => {
+        i.addRecord(rec({ id: "imp", name: "TipTac Reborn", externalId: "12345", installedFolderList: ["TipTac"] }));
+        i.addRecord(libRecord);
+        i.addRecord(stray);
+      });
+      const json = JSON.stringify({
+        client_type: "ClassicEra",
+        addons: [{ id: "12345", name: "TipTac", provider_name: "Curse" }],
+      });
+      const imported: any = await i.tools.import_addons({ text: json }, i.ctx);
+      expect(noted(i)).toEqual(["imp", "dep1"]);
+      expect(imported.changedByWowUp).toEqual(byWowUp);
+    });
+
+    it("update_addons notes only the dependencies its updates installed", async () => {
+      const m = make({
+        records: [
+          rec({
+            id: "a1",
+            name: "Alpha",
+            latestVersion: "2.0",
+            externalLatestReleaseId: "r2",
+            dependencies: [{ externalAddonId: "500", type: 2 }],
+          }),
+        ],
+        results: { "1": alphaRelease(), "500": lib },
+      });
+      m.addonService.updateAddon.and.callFake(async (a: any) => {
+        m.addRecord({ ...a, installedVersion: a.latestVersion });
+        m.addRecord(libRecord);
+        m.addRecord(stray);
+      });
+
+      const out: any = await m.tools.update_addons({ addonIds: ["a1"] }, m.ctx);
+
+      expect(noted(m)).toEqual(["dep1"]);
+      expect(out.changed.map((c: any) => `${c.change} ${c.addonId}`)).toEqual(["updated a1", "added dep1"]);
+      expect(out.changedByWowUp).toEqual(byWowUp);
+    });
+
+    it("remove_addon, set_auto_update and set_ignored note none, and rescan notes every new record", async () => {
+      for (const tool of ["remove_addon", "set_auto_update", "set_ignored"]) {
+        const m = make({ records: [rec({ id: "a1" })] });
+        // WowUp's auto-update saves another addon right before the backup is taken
+        m.whenIdle.and.callFake(async () => m.addRecord(stray));
+        const args = tool === "remove_addon" ? { addonId: "a1" } : { addonId: "a1", enabled: false, ignored: true };
+
+        const out: any = await m.tools[tool](args, m.ctx);
+
+        expect(m.backupService.recordAdded).withContext(tool).not.toHaveBeenCalled();
+        expect(out.changedByWowUp).withContext(tool).toEqual(byWowUp);
+      }
+
+      // a rescan re-creates every record of the installation, so all the new ones are its
+      const r = make({ records: [rec({ id: "a1" })] });
+      r.whenIdle.and.callFake(async () => r.addRecord(stray));
+      const out: any = await r.tools.rescan({}, r.ctx);
+      expect(noted(r).sort()).toEqual(["a1-scanned", "wowup1-scanned"]);
+      expect(out.changedByWowUp).toBeUndefined();
     });
   });
 });

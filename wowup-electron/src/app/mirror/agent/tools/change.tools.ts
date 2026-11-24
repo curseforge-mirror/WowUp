@@ -163,6 +163,10 @@ const RECORDS_ONLY = { recordsOnly: true };
  */
 const SETTINGS_ONLY = { recordsOnly: true, restoreMode: "settings" as const };
 
+/** With `changedByWowUp`: records that appeared while a change ran that the change didn't make */
+const BY_WOWUP_NOTE =
+  "Changed by WowUp during this change (for example its own auto-update), not by this call, so not included in the backup.";
+
 const IMPORT_ERRORS: Record<string, string> = {
   GENERIC_IMPORT_ERROR: "The import lists no addons.",
   INVALID_CLIENT_TYPE: "The import was made for another game client than this installation.",
@@ -664,16 +668,19 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
   };
 
   /**
-   * Runs a change after its backup: then notes every record the change created in the backup (also when the change
-   * failed partway, so rollback removes a half-done install), and names the backup in any error.
+   * Runs a change after its backup: then notes in the backup the records that appeared and that the change created
+   * (`ours`: its addon, the dependencies it installs; also when it failed partway, so rollback removes a half-done
+   * install), and names the backup in any error. A record that appeared for another reason, such as WowUp's own
+   * hourly auto-update running meanwhile, is not the change's to undo: it is left out (`byWowUp`).
    */
   const runChange = async (
     backupId: string,
     installation: WowInstallation,
     before: Addon[],
     what: string,
+    ours: (a: Addon) => boolean,
     work: () => Promise<void>,
-  ): Promise<{ added: Addon[]; after: Addon[] }> => {
+  ): Promise<{ added: Addon[]; after: Addon[]; byWowUp: Addon[] }> => {
     const beforeIds = new Set(before.map((a) => a.id));
     let failure: unknown;
     try {
@@ -684,9 +691,12 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
 
     let after: Addon[] = [];
     let added: Addon[] = [];
+    let byWowUp: Addon[] = [];
     try {
       after = await recordsOf(installation);
-      added = after.filter((a) => !!a.id && !beforeIds.has(a.id));
+      const appeared = after.filter((a) => !!a.id && !beforeIds.has(a.id));
+      added = appeared.filter((a) => ours(a));
+      byWowUp = appeared.filter((a) => !ours(a));
       if (added.length > 0) {
         await backupService.recordAdded(backupId, added);
       }
@@ -708,7 +718,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         `${what} failed: ${message(failure)}. A backup was taken first; undo with rollback backupId "${backupId}".`,
       );
     }
-    return { added, after };
+    return { added, after, byWowUp };
   };
 
   /** The added records, the one the plan installed first */
@@ -716,6 +726,24 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
     [...added]
       .sort((a, b) => (a.id === mainId ? -1 : b.id === mainId ? 1 : 0))
       .map((a) => changedOf("added", a, a.installedVersion ?? a.latestVersion));
+
+  /** For a change's result: the records WowUp itself added while it ran, which its backup leaves out */
+  const changedByWowUp = (byWowUp: Addon[]): { changedByWowUp?: { addons: ChangedLine[]; note: string } } =>
+    byWowUp.length > 0 ? { changedByWowUp: { addons: addedLines(byWowUp), note: BY_WOWUP_NOTE } } : {};
+
+  /** A record the change made: its own addon (by id, or provider and externalId), or a dependency it installs */
+  const madeBy = (
+    releases: Array<{ provider: string; externalId: string }>,
+    dependencies: Dependency[],
+    ids: string[] = [],
+  ): ((a: Addon) => boolean) => {
+    const isDependency = (a: Addon) =>
+      dependencies.some(
+        (d) => isProvider(a, d.line.provider, d.line.externalId) || isProvider(a, d.line.provider, d.recordExternalId),
+      );
+    return (a) =>
+      ids.includes(a.id) || releases.some((r) => isProvider(a, r.provider, r.externalId)) || isDependency(a);
+  };
 
   /** Records WowUp's install reconcile drops: unmatched ones claiming a folder the release writes */
   const droppedUnknowns = (installed: Addon[], folders: string[], except?: Addon): Addon[] =>
@@ -808,10 +836,15 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         written,
         `install_addon ${plan.line.provider} ${plan.line.externalId} ${plan.line.name} ${ver(plan.line.version)}`,
       );
-      const { added } = await runChange(backup.id, installation, installed, `Installing ${plan.line.name}`, () =>
-        install(addon, plan, ctx),
+      const { added, byWowUp } = await runChange(
+        backup.id,
+        installation,
+        installed,
+        `Installing ${plan.line.name}`,
+        madeBy([plan.line], dependencies, [addon.id]),
+        () => install(addon, plan, ctx),
       );
-      return { backupId: backup.id, changed: addedLines(added, addon.id) };
+      return { backupId: backup.id, changed: addedLines(added, addon.id), ...changedByWowUp(byWowUp) };
     },
 
     update_addons: async (args, ctx) => {
@@ -944,20 +977,28 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         `update_addons ${listNames(targets.map((a) => `${a.name} ${ver(a.installedVersion)} -> ${ver(a.latestVersion)}`))}`,
       );
       const failed: { addonId: string; name: string; error: string }[] = [];
-      const { after } = await runChange(backup.id, installation, installed, "Updating addons", async () => {
-        await Promise.all(
-          targets.map(async (a) => {
-            try {
-              await addonService.updateAddon(a, progressFor(ctx, a.name));
-            } catch (e) {
-              failed.push({ addonId: a.id, name: a.name, error: message(e) });
-            }
-          }),
-        );
-        if (failed.length === targets.length) {
-          throw new Error(failed.map((f) => `${f.name}: ${f.error}`).join("; "));
-        }
-      });
+      // An update makes no record of its own (it keeps the addon's), only the dependencies it installs along
+      const { after, added, byWowUp } = await runChange(
+        backup.id,
+        installation,
+        installed,
+        "Updating addons",
+        madeBy([], dependencies),
+        async () => {
+          await Promise.all(
+            targets.map(async (a) => {
+              try {
+                await addonService.updateAddon(a, progressFor(ctx, a.name));
+              } catch (e) {
+                failed.push({ addonId: a.id, name: a.name, error: message(e) });
+              }
+            }),
+          );
+          if (failed.length === targets.length) {
+            throw new Error(failed.map((f) => `${f.name}: ${f.error}`).join("; "));
+          }
+        },
+      );
 
       const failedIds = new Set(failed.map((f) => f.addonId));
       const byId = new Map(after.map((a) => [a.id, a]));
@@ -969,12 +1010,13 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         });
       return {
         backupId: backup.id,
-        changed,
+        changed: [...changed, ...addedLines(added)],
         ...(failed.length > 0
           ? { failed, note: `Some updates failed; rollback ${backup.id} undoes the ones that went through.` }
           : {}),
         ...(skipped.length > 0 ? { skipped } : {}),
         ...(warnings.length > 0 ? { warnings } : {}),
+        ...changedByWowUp(byWowUp),
       };
     },
 
@@ -1005,10 +1047,16 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         `remove_addon ${addon.providerName ?? ""} ${addon.externalId ?? ""} ${addon.name} ${ver(addon.installedVersion)}`,
       );
       ctx.progress(`Removing ${addon.name}`);
-      await runChange(backup.id, installation, installed, `Removing ${addon.name}`, () =>
-        addonService.removeAddon(addon, false, true),
+      // A removal makes no record
+      const { byWowUp } = await runChange(
+        backup.id,
+        installation,
+        installed,
+        `Removing ${addon.name}`,
+        () => false,
+        () => addonService.removeAddon(addon, false, true),
       );
-      return { backupId: backup.id, changed: [changedOf("removed", addon)] };
+      return { backupId: backup.id, changed: [changedOf("removed", addon)], ...changedByWowUp(byWowUp) };
     },
 
     replace_addon: async (args, ctx) => {
@@ -1064,18 +1112,23 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         written,
         `replace_addon ${old.name} ${ver(old.installedVersion)} with ${plan.line.provider} ${plan.line.externalId} ${plan.line.name} ${ver(plan.line.version)}`,
       );
-      const { added } = await runChange(
+      const { added, byWowUp } = await runChange(
         backup.id,
         installation,
         installed,
         `Replacing ${old.name} with ${plan.line.name}`,
+        madeBy([plan.line], dependencies, [addon.id]),
         async () => {
           ctx.progress(`Removing ${old.name}`);
           await addonService.removeAddon(old, false, true);
           await install(addon, plan, ctx);
         },
       );
-      return { backupId: backup.id, changed: [changedOf("removed", old), ...addedLines(added, addon.id)] };
+      return {
+        backupId: backup.id,
+        changed: [changedOf("removed", old), ...addedLines(added, addon.id)],
+        ...changedByWowUp(byWowUp),
+      };
     },
 
     switch_provider: async (args, ctx) => {
@@ -1132,14 +1185,20 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         `switch_provider ${addon.name} ${addon.providerName ?? ""} ${addon.externalId ?? ""} -> ${ext.providerName} ${ext.id}`,
       );
       ctx.progress(`Switching ${addon.name} to ${ext.providerName}`);
-      const { added } = await runChange(
+      // setProvider makes the new record itself (its id isn't known here), from the provider and externalId
+      const { added, byWowUp } = await runChange(
         backup.id,
         installation,
         installed,
         `Switching ${addon.name} to ${ext.providerName}`,
+        madeBy([{ provider: ext.providerName, externalId: ext.id }, plan.line], dependencies),
         () => addonService.setProvider(addon, ext.id, ext.providerName, installation),
       );
-      return { backupId: backup.id, changed: [changedOf("removed", addon), ...addedLines(added)] };
+      return {
+        backupId: backup.id,
+        changed: [changedOf("removed", addon), ...addedLines(added)],
+        ...changedByWowUp(byWowUp),
+      };
     },
 
     set_auto_update: async (args, ctx) => {
@@ -1170,16 +1229,24 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         `set_auto_update ${addon.name} ${state}`,
         SETTINGS_ONLY,
       );
-      await runChange(backup.id, installation, installed, `Turning auto-update ${state} for ${addon.name}`, () => {
-        // As My Addons does: auto-update brings notifications along and un-ignores the addon
-        addon.autoUpdateEnabled = enabled;
-        addon.autoUpdateNotificationsEnabled = enabled;
-        if (enabled) {
-          addon.isIgnored = false;
-        }
-        return addonService.saveAddon(addon);
-      });
-      return { backupId: backup.id, changed: [changedOf("updated", addon)] };
+      // A settings change makes no record
+      const { byWowUp } = await runChange(
+        backup.id,
+        installation,
+        installed,
+        `Turning auto-update ${state} for ${addon.name}`,
+        () => false,
+        () => {
+          // As My Addons does: auto-update brings notifications along and un-ignores the addon
+          addon.autoUpdateEnabled = enabled;
+          addon.autoUpdateNotificationsEnabled = enabled;
+          if (enabled) {
+            addon.isIgnored = false;
+          }
+          return addonService.saveAddon(addon);
+        },
+      );
+      return { backupId: backup.id, changed: [changedOf("updated", addon)], ...changedByWowUp(byWowUp) };
     },
 
     set_ignored: async (args, ctx) => {
@@ -1209,15 +1276,23 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         `set_ignored ${addon.name} ${ignored ? "on" : "off"}`,
         SETTINGS_ONLY,
       );
-      await runChange(backup.id, installation, installed, `Marking ${addon.name}`, () => {
-        // As My Addons does: ignoring an addon turns its auto-update off
-        addon.isIgnored = ignored;
-        if (ignored) {
-          addon.autoUpdateEnabled = false;
-        }
-        return addonService.saveAddon(addon);
-      });
-      return { backupId: backup.id, changed: [changedOf("updated", addon)] };
+      // A settings change makes no record
+      const { byWowUp } = await runChange(
+        backup.id,
+        installation,
+        installed,
+        `Marking ${addon.name}`,
+        () => false,
+        () => {
+          // As My Addons does: ignoring an addon turns its auto-update off
+          addon.isIgnored = ignored;
+          if (ignored) {
+            addon.autoUpdateEnabled = false;
+          }
+          return addonService.saveAddon(addon);
+        },
+      );
+      return { backupId: backup.id, changed: [changedOf("updated", addon)], ...changedByWowUp(byWowUp) };
     },
 
     rescan: async (args, ctx) => {
@@ -1241,8 +1316,14 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
         RECORDS_ONLY,
       );
       ctx.progress(`Rescanning ${nameOf(installation)}`);
-      const { after } = await runChange(backup.id, installation, installed, `Rescanning ${nameOf(installation)}`, () =>
-        addonService.rescanInstallation(installation).then(() => undefined),
+      // A rescan re-creates every record of the installation, so every new one is its own
+      const { after } = await runChange(
+        backup.id,
+        installation,
+        installed,
+        `Rescanning ${nameOf(installation)}`,
+        () => true,
+        () => addonService.rescanInstallation(installation).then(() => undefined),
       );
 
       // What the rescan changed by addon, not by record (every record gets a new id)
@@ -1388,10 +1469,22 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       const sub = brokerService.addonInstall$.subscribe((evt) =>
         progressFor(ctx, names.get(evt.comparisonId) ?? "addon")(evt.installState, evt.progress),
       );
+      // WowUp makes the records itself (their ids aren't known here): the imported addons by provider and externalId,
+      // as the import lists them or the provider resolved them, and their dependencies
+      const imported = kept.flatMap((p) => [
+        p.line,
+        { provider: p.comparison.imported.provider_name, externalId: p.comparison.imported.id },
+      ]);
       let added: Addon[];
+      let byWowUp: Addon[];
       try {
-        ({ added } = await runChange(backup.id, installation, installed, "Importing addons", () =>
-          brokerService.installImportSummary(toInstall, installation),
+        ({ added, byWowUp } = await runChange(
+          backup.id,
+          installation,
+          installed,
+          "Importing addons",
+          madeBy(imported, allDependencies),
+          () => brokerService.installImportSummary(toInstall, installation),
         ));
       } finally {
         sub.unsubscribe();
@@ -1413,6 +1506,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
           ? { failed, note: `${failed.length} addon(s) did not install; rollback ${backup.id} undoes the rest.` }
           : {}),
         ...(skipped.length > 0 ? { skipped } : {}),
+        ...changedByWowUp(byWowUp),
       };
     },
 

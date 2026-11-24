@@ -49,8 +49,9 @@ export interface BackupManifest {
   /** SavedVariables files relative to the WTF folder, copied to `wtf/<path>` */
   savedVariables: string[];
   /**
-   * What the change added, removed again by rollback. Folders that did not exist when the backup was taken are
-   * listed here too: whatever is there after the change was added by it.
+   * What the change added, removed again by rollback: the records it made (its addon and the dependencies it
+   * installed, never one WowUp's own auto-update saved meanwhile). Folders that did not exist when the backup was
+   * taken are listed here too: whatever is there after the change was added by it.
    */
   added: { addonIds: string[]; folders: string[]; names?: string[] };
   /** Folders and records were rolled back, SavedVariables wait for WoW to close */
@@ -304,7 +305,7 @@ export class AgentBackupService {
     });
   }
 
-  /** Note the addons a change installed, so rollback removes their records and folders */
+  /** Note the addons a change installed (only those), so rollback removes their records and folders */
   public recordAdded(id: string, added: Addon[]): Promise<void> {
     return this.exclusive(async () => {
       const manifest = await this.readManifest(assertBackupId(id));
