@@ -61,3 +61,24 @@ The workflow needs the `BUNDLE_SIGNING_KEY` (PEM) and `BUNDLE_SIGNING_KEY_ID` (`
 key also lives in `~/.wowup-mirror/`. If it's ever lost, generate a new one with
 `node wowup-shell/scripts/generate-bundle-key.mts <id> <file>`, swap it into `bundle-keys.ts` and ship a release.
 Installers carry both the shell and the bundle, so nothing is stranded.
+
+## Agent control (MCP)
+
+WowUp can let AI agents on the same computer search, install, update and remove addons, check addon health and roll changes back, through a local MCP server. It is **off by default**. Turn it on in **Options → Addons → Let AI agents control WowUp (MCP)**.
+
+Every change an agent makes is backed up first, in `agent-backups/` inside WowUp's app data folder (old backups are pruned after 30 days, keeping the newest 50). Downloads are unpacked and inspected in `agent-sandbox/` in the same folder, which is wiped at each start. The server listens on `127.0.0.1` only (default port 17483) and rejects any request carrying a foreign `Origin` header (which is what keeps web pages out). There is no key: like other local MCP servers (Figma's desktop app, JetBrains IDEs), it relies on the on/off switch, the local-only address and the Origin check, and ignores any `Authorization` header.
+
+Connecting, using the **Copy setup** buttons in Options:
+
+- **Claude Code**: paste the copied `claude mcp add --transport http wowup …` command into a terminal.
+- **Claude Desktop**: merge the copied JSON (`mcp-remote` via `npx`) into `claude_desktop_config.json`.
+- **Other apps**: the copied JSON (just the `url`) fits any client that speaks streamable HTTP.
+
+Code lives in `wowup-electron/app/mirror/agent/` (main process: HTTP server) and `wowup-electron/src/app/mirror/agent/` (renderer: tools, backups, Options block). Hook points into upstream files:
+
+| File | Hook |
+| :--- | :--- |
+| `wowup-electron/app/main.ts` | starts the agent server and registers its IPC channels |
+| `wowup-electron/src/app/app.component.ts` | initializes `AgentBridgeService` at startup |
+| `wowup-electron/src/app/components/options/options-addon-section/options-addon-section.component.html` | the `<app-agent-options>` tag after the CurseForge key block |
+| `wowup-electron/src/app/modules/options.module.ts` | `AgentOptionsComponent` in `imports` |

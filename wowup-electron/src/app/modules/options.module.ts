@@ -14,6 +14,7 @@ import { MatModule } from "./mat-module";
 import { PipesModule } from "./pipes.module";
 import { DirectiveModule } from "./directive.module";
 import { OptionsCurseforgeSectionComponent } from "../components/options/options-curseforge-section/options-curseforge-section.component";
+import { AgentOptionsComponent } from "../mirror/agent/agent-options.component";
 
 @NgModule({
   declarations: [
@@ -34,6 +35,7 @@ import { OptionsCurseforgeSectionComponent } from "../components/options/options
     MatModule,
     PipesModule,
     DirectiveModule,
+    AgentOptionsComponent,
   ],
   exports: [
     WtfExplorerComponent,
