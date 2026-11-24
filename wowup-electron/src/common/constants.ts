@@ -26,7 +26,6 @@ export const WOWUP_DATA_ADDON_FOLDER_NAME = "wowup_data_addon";
 export const WOWUP_ASSET_FOLDER_NAME = "WowUpAddon";
 
 // IPC CHANNELS
-export const IPC_DOWNLOAD_FILE_CHANNEL = "download-file";
 export const IPC_COPY_DIRECTORY_CHANNEL = "copy-directory";
 export const IPC_CREATE_DIRECTORY_CHANNEL = "create-directory";
 export const IPC_DELETE_DIRECTORY_CHANNEL = "delete-directory";
@@ -36,12 +35,10 @@ export const IPC_STAT_FILES_CHANNEL = "stat-files";
 export const IPC_PATH_EXISTS_CHANNEL = "path-exists";
 export const IPC_LIST_FILES_CHANNEL = "list-files";
 export const IPC_READ_FILE_CHANNEL = "read-file";
-export const IPC_READ_FILE_BUFFER_CHANNEL = "read-file-buffer";
 export const IPC_WRITE_FILE_CHANNEL = "write-file";
 export const IPC_UNZIP_FILE_CHANNEL = "unzip-file";
 export const IPC_COPY_FILE_CHANNEL = "copy-file";
 export const IPC_SHOW_DIRECTORY = "show-directory";
-export const IPC_GET_HOME_DIR = "get-home-dir";
 export const IPC_GET_ASSET_FILE_PATH = "get-asset-file-path";
 export const IPC_CREATE_TRAY_MENU_CHANNEL = "create-tray-menu";
 export const IPC_CREATE_APP_MENU_CHANNEL = "create-app-menu";
@@ -85,7 +82,6 @@ export const IPC_GET_LAUNCH_ARGS = "get-launch-args";
 export const IPC_GET_LOGIN_ITEM_SETTINGS = "get-login-item-settings";
 export const IPC_SET_LOGIN_ITEM_SETTINGS = "set-login-item-settings";
 export const IPC_LIST_ENTRIES = "list-entries";
-export const IPC_READDIR = "readdir";
 export const IPC_IS_DEFAULT_PROTOCOL_CLIENT = "is-default-protocol-client";
 export const IPC_SET_AS_DEFAULT_PROTOCOL_CLIENT = "set-as-default-protocol-client";
 export const IPC_REMOVE_AS_DEFAULT_PROTOCOL_CLIENT = "remove-as-default-protocol-client";
@@ -101,8 +97,6 @@ export const IPC_ADDONS_GET_BY_EXTERNAL_IDS = "addons-get-by-external-ids";
 export const IPC_ADDONS_GET_AVAILABLE_FOR_UPDATE = "addons-get-available-for-update";
 export const IPC_ADDONS_GET_AUTO_UPDATE_ENABLED = "addons-get-auto-update-enabled";
 export const IPC_GET_PENDING_OPEN_URLS = "get-pending-open-urls";
-export const IPC_GET_LATEST_DIR_UPDATE_TIME = "get-latest-dir-update-time";
-export const IPC_LIST_DIR_RECURSIVE = "list-dir-recursive";
 export const IPC_GET_DIRECTORY_TREE = "get-directory-tree";
 export const IPC_SYSTEM_PREFERENCES_GET_USER_DEFAULT = "system-preferences-get-user-default";
 export const IPC_SHOW_OPEN_DIALOG = "show-open-dialog";
@@ -145,7 +139,18 @@ export const IPC_TOC_PARSE = "toc-parse";
 export const IPC_TOC_GET_ALL_TOCS = "toc-get-all-tocs";
 
 // ADDON SCAN CONTROLLER
-export const IPC_ADDON_GET_SCAN_RESULTS = "addons-get-scan-results";
+export const IPC_ADDON_SCAN_PREPARE = "addons-scan-prepare";
+export const IPC_ADDON_SCAN = "addons-scan";
+export const IPC_ADDON_SCAN_EVENT = "addons-scan-event";
+export const IPC_ADDON_SYNC_APPLY = "addons-sync-apply";
+export const IPC_ADDON_INSTALL = "addons-install";
+export const IPC_ADDON_INSTALL_PROGRESS = "addons-install-progress";
+export const IPC_ADDON_REMOVE = "addons-remove";
+
+// ADDON PROVIDER CONTROLLER
+export const IPC_ADDON_PROVIDERS_INIT = "addon-providers-init";
+export const IPC_ADDON_PROVIDERS_CALL = "addon-providers-call";
+export const IPC_ADDON_PROVIDERS_MATCH = "addon-providers-match";
 
 // METRICS CONTROLLER
 export const IPC_METRICS_GET_SNAPSHOT = "metrics-get-snapshot";

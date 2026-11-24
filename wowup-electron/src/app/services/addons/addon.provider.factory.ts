@@ -1,29 +1,17 @@
-import { HttpClient } from "@angular/common/http";
 import { Injectable } from "@angular/core";
-import { AddonProvider, AddonProviderType } from "wowup-lib-core";
-import { GitHubAddonProvider } from "../../addon-providers/github-addon-provider";
-import { RaiderIoAddonProvider } from "../../addon-providers/raiderio-provider";
-import { ZipAddonProvider } from "../../addon-providers/zip-provider";
-import { WowUpCompanionAddonProvider } from "../../addon-providers/wowup-companion-addon-provider";
-import { CachingService } from "../caching/caching-service";
-import { ElectronService } from "../electron/electron.service";
+import { Addon, AddonProvider, AddonProviderType } from "wowup-lib-core";
+import { Subject } from "rxjs";
+
 import { WowUpService } from "../wowup/wowup.service";
-import { NetworkService } from "../network/network.service";
-import { FileService } from "../files/file.service";
-import { TocService } from "../toc/toc.service";
-import { WarcraftService } from "../warcraft/warcraft.service";
 import { AddonProviderState } from "../../models/wowup/addon-provider-state";
 import { ADDON_PROVIDER_UNKNOWN, WAGO_PROMPT_KEY } from "../../../common/constants";
-import { Subject } from "rxjs";
 import { PreferenceStorageService } from "../storage/preference-storage.service";
-import { SensitiveStorageService } from "../storage/sensitive-storage.service";
-import { UiMessageService } from "../ui-message/ui-message.service";
-import { CurseAddonProvider } from "../../addon-providers/curse-addon-provider";
-import { WowUpAddonProvider, WowInterfaceAddonProvider, TukUiAddonProvider } from "wowup-lib-core";
+import { RemoteAddonProvider } from "../../addon-providers/remote-addon-provider";
 import { AppConfig } from "../../../environments/environment";
-import { GenericNetworkInterface } from "../../business-objects/generic-network-interface";
-import { WagoAddonProvider } from "../../addon-providers/wago-addon-provider";
-import { applyMirrorProviderRules, MIRROR_CURSEFORGE_PROVIDER } from "../../mirror/mirror";
+import { AddonProviderApiService } from "../api/addon-provider-api.service";
+import { AddonProviderConfig } from "../../../common/models/addon-provider";
+import { SensitiveStorageService } from "../storage/sensitive-storage.service";
+import { applyMirrorProviderRules, mirrorProviderConfig } from "../../mirror/mirror";
 
 @Injectable({
   providedIn: "root",
@@ -31,78 +19,45 @@ import { applyMirrorProviderRules, MIRROR_CURSEFORGE_PROVIDER } from "../../mirr
 export class AddonProviderFactory {
   private readonly _addonProviderChangeSrc = new Subject<AddonProvider>();
 
-  private _providerMap: Map<string, AddonProvider> = new Map();
+  private _providerMap: Map<string, RemoteAddonProvider> = new Map();
 
   public readonly addonProviderChange$ = this._addonProviderChangeSrc.asObservable();
 
-  private _wowupNetworkInterface: GenericNetworkInterface;
-  private _wowInterfaceNetworkInterface: GenericNetworkInterface;
-  private _tukuiNetworkInterface: GenericNetworkInterface;
-
   public constructor(
-    private _cachingService: CachingService,
-    private _electronService: ElectronService,
-    private _httpClient: HttpClient,
     private _wowupService: WowUpService,
-    private _networkService: NetworkService,
-    private _fileService: FileService,
-    private _tocService: TocService,
-    private _warcraftService: WarcraftService,
-
     private _preferenceStorageService: PreferenceStorageService,
+    private _addonProviderApiService: AddonProviderApiService,
     private _sensitiveStorageService: SensitiveStorageService,
-    private _uiMessageService: UiMessageService,
-  ) {
-    this._wowupNetworkInterface = new GenericNetworkInterface(
-      this._networkService.getCircuitBreaker(
-        "wowup_addon_provider",
-        AppConfig.defaultHttpResetTimeoutMs,
-        AppConfig.wowUpHubHttpTimeoutMs,
-      ),
-      { "X-WowUp-Install-Id": window.installId, "X-WowUp-Platform": window.platform },
-    );
-
-    this._wowInterfaceNetworkInterface = new GenericNetworkInterface(
-      this._networkService.getCircuitBreaker(
-        "wow_interface_provider",
-        AppConfig.defaultHttpResetTimeoutMs,
-        AppConfig.wowUpHubHttpTimeoutMs,
-      ),
-    );
-
-    this._tukuiNetworkInterface = new GenericNetworkInterface(
-      this._networkService.getCircuitBreaker(
-        "tukui_provider",
-        AppConfig.defaultHttpResetTimeoutMs,
-        AppConfig.wowUpHubHttpTimeoutMs,
-      ),
-    );
-  }
+  ) {}
 
   /** This is part of the APP_INITIALIZER and called before the app is bootstrapped */
   public async loadProviders(): Promise<void> {
     if (this._providerMap.size !== 0) {
       return;
     }
-    const providers: AddonProvider[] = [
-      this.createZipAddonProvider(),
-      this.createRaiderIoAddonProvider(),
-      this.createWowUpCompanionAddonProvider(),
-      this.createWowUpAddonProvider(),
-    ];
 
-    if (AppConfig.wago.enabled) {
-      providers.push(this.createWagoAddonProvider());
-    }
-
-    if (AppConfig.curseforge.enabled || MIRROR_CURSEFORGE_PROVIDER) {
-      providers.push(this.createCurseProvider());
-    }
-
-    providers.push(
-      this.createTukUiAddonProvider(),
-      this.createWowInterfaceAddonProvider(),
-      this.createGitHubAddonProvider(),
+    // Every provider runs in main (UI_DECOUPLING_PLAN.md, Phase 5b); the renderer keeps a stand-in for each,
+    // in main's order, which is the order lookups go through them
+    const config: AddonProviderConfig = {
+      wowUpHubUrl: AppConfig.wowUpHubUrl,
+      wowUpWebsiteUrl: AppConfig.wowUpWebsiteUrl,
+      defaultHttpTimeoutMs: AppConfig.defaultHttpTimeoutMs,
+      defaultHttpResetTimeoutMs: AppConfig.defaultHttpResetTimeoutMs,
+      wowUpHubHttpTimeoutMs: AppConfig.wowUpHubHttpTimeoutMs,
+      wagoHttpTimeoutMs: AppConfig.wagoHttpTimeoutMs,
+      featuredAddonsCacheTimeSec: AppConfig.featuredAddonsCacheTimeSec,
+      wago: { enabled: AppConfig.wago.enabled },
+      curseforge: {
+        enabled: AppConfig.curseforge.enabled,
+        apiKey: AppConfig.curseforge.apiKey,
+        httpTimeoutMs: AppConfig.curseforge.httpTimeoutMs,
+      },
+    };
+    const descriptors = await this._addonProviderApiService.init(
+      await mirrorProviderConfig(this._sensitiveStorageService, config),
+    );
+    const providers = descriptors.map(
+      (descriptor) => new RemoteAddonProvider(descriptor, this._addonProviderApiService),
     );
 
     for (const provider of providers) {
@@ -113,6 +68,7 @@ export class AddonProviderFactory {
     await applyMirrorProviderRules({
       providers: this._providerMap,
       sensitiveStorage: this._sensitiveStorageService,
+      restart: (mirrorConfig) => this._addonProviderApiService.init(mirrorConfig),
       restoreState: this.setProviderState,
       notify: (provider) => this._addonProviderChangeSrc.next(provider),
     });
@@ -149,50 +105,6 @@ export class AddonProviderFactory {
     this._addonProviderChangeSrc.next(provider);
   }
 
-  public createWagoAddonProvider(): WagoAddonProvider {
-    return new WagoAddonProvider(
-      this._electronService,
-      this._cachingService,
-      this._warcraftService,
-      this._tocService,
-      this._uiMessageService,
-      this._sensitiveStorageService,
-      this._networkService,
-    );
-  }
-
-  public createWowUpCompanionAddonProvider(): WowUpCompanionAddonProvider {
-    return new WowUpCompanionAddonProvider(this._fileService, this._tocService);
-  }
-
-  public createRaiderIoAddonProvider(): RaiderIoAddonProvider {
-    return new RaiderIoAddonProvider(this._tocService);
-  }
-
-  public createCurseProvider(): CurseAddonProvider {
-    return new CurseAddonProvider(this._cachingService, this._networkService, this._tocService);
-  }
-
-  public createTukUiAddonProvider(): TukUiAddonProvider {
-    return new TukUiAddonProvider(this._tukuiNetworkInterface);
-  }
-
-  public createWowInterfaceAddonProvider(): WowInterfaceAddonProvider {
-    return new WowInterfaceAddonProvider(this._wowInterfaceNetworkInterface);
-  }
-
-  public createGitHubAddonProvider(): GitHubAddonProvider {
-    return new GitHubAddonProvider(this._httpClient, this._sensitiveStorageService);
-  }
-
-  public createWowUpAddonProvider(): WowUpAddonProvider {
-    return new WowUpAddonProvider(AppConfig.wowUpHubUrl, AppConfig.wowUpWebsiteUrl, this._wowupNetworkInterface);
-  }
-
-  public createZipAddonProvider(): ZipAddonProvider {
-    return new ZipAddonProvider(this._httpClient, this._fileService, this._tocService, this._warcraftService);
-  }
-
   public getProvider<T = AddonProvider>(providerName: string): T | undefined {
     if (!providerName || !this.hasProvider(providerName)) {
       return undefined;
@@ -205,14 +117,30 @@ export class AddonProviderFactory {
     return this._providerMap.has(providerName);
   }
 
-  public getAddonProviderForUri(addonUri: URL): AddonProvider | undefined {
-    for (const ap of this._providerMap.values()) {
-      if (ap.isValidAddonUri(addonUri)) {
-        return ap;
-      }
-    }
+  /** Every provider this build has, enabled or not */
+  public getProviderNames(): string[] {
+    return [...this._providerMap.keys()];
+  }
 
-    return undefined;
+  /** Providers whose addons a scan can't find again from the folders on disk, e.g. GitHub */
+  public getNonRescanProviderNames(): string[] {
+    return [...this._providerMap.values()].filter((ap) => ap.allowReScan !== true).map((ap) => ap.name);
+  }
+
+  public async getAddonProviderForUri(addonUri: URL): Promise<AddonProvider | undefined> {
+    const claimed = new Set(await this._addonProviderApiService.match({ kind: "uri", value: addonUri.toString() }));
+    return [...this._providerMap.values()].find((ap) => claimed.has(ap.name));
+  }
+
+  public async getAddonProviderForProtocol(protocol: string): Promise<AddonProvider | undefined> {
+    const claimed = new Set(await this._addonProviderApiService.match({ kind: "protocol", value: protocol }));
+    return this.getEnabledAddonProviders().find((ap) => claimed.has(ap.name));
+  }
+
+  /** Whether the addon's provider wants it re-matched, e.g. a hub addon saved without its release id */
+  public async shouldMigrate(addon: Addon): Promise<boolean> {
+    const provider = this._providerMap.get(addon.providerName ?? "");
+    return provider ? await provider.shouldMigrateAsync(addon) : false;
   }
 
   /** Registered in this build and not turned off by the user */

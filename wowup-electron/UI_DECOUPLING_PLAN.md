@@ -60,34 +60,185 @@ Pattern for each phase:
   so it isn't "business logic coupled to Electron" in the sense this plan cares about —
   same rationale as keeping `TranslateService`-based display names client-side in Phase 2.
 
-## Phase 4 — Addon Scan / Sync 🚧 in progress
+## Phase 4 — Addon Scan / Sync ✅ done
 
-- ✅ **Fingerprinting.** `AddonScanController` (`app/controllers/scan/`) + `AddonScanService`
+- ✅ **Fingerprinting.** `AddonFingerprintController` (`app/controllers/scan/`) + `AddonScanService`
   (`app/services/scan/`) own folder fingerprinting behind a single
   `IPC_ADDON_GET_SCAN_RESULTS` channel that takes the sources it should produce.
   `WowUpFolderScanner`/`CurseFolderScanner` now take their filesystem access as deps from a
   shared `FolderScanContext`, so one folder is walked once and each file read once however
   many fingerprints are wanted — the two per-source channels it replaced each did their own
-  walk and their own reads. Renderer side is `addon-scan-api.service.ts`, consumed by
-  `AddonFingerprintService`. Fingerprint values are pinned by characterization tests in
-  `addon-scan.service.spec.ts`.
-- ⏳ **Scan/sync orchestration.** Still in `src/app/services/addons/addon.service.ts`:
-  matching scanned folders back to known addons, and the sync pipeline around it.
-- `AddonController` (`app/controllers/addon.controller.ts`) already owns addon *storage*
-  CRUD (get/save addons) — the remaining orchestration extends it (or adds a sibling
-  controller).
+  walk and their own reads. Fingerprint values are pinned by characterization tests in
+  `addon-scan.service.spec.ts`. A scan now fingerprints inside `prepareScan` (below); the
+  channel stays for the post-install fingerprint in `addon-install.service.ts`.
+- ✅ **Scan/sync orchestration**, split around the addon providers, which stay in the
+  renderer until Phase 5. `AddonSyncController` (`app/controllers/scan/`) +
+  `AddonSyncService` (`app/services/addons/`) expose three channels:
+  - `IPC_ADDON_SCAN_PREPARE` takes just an installation id (plus, for a rescan, the providers
+    a scan can't find again). Main works out the folder path, the symlink preference and the
+    flavor's fingerprint sources itself, lists the folders, flags git checkouts, leaves out
+    the non-rescan providers' folders, and fingerprints the rest.
+  - The renderer then runs each enabled provider's `scan()` to set `matchingAddon`.
+  - `IPC_ADDON_SCAN_COMPLETE` turns matched folders into addons (`scan-assembly.ts`: TOC
+    external ids, grouping, unmatched/load-on-demand folders). The non-rescan providers'
+    addons are read from main's own store at this point, and for a rescan main keeps the
+    user's settings and replaces the installation's saved addons in one step.
+  - `IPC_ADDON_SYNC_APPLY` applies one provider's `getAll`/`getAllBatch` answer
+    (`sync-results.ts`) to main's *saved* copy of each addon, with no await between read and
+    write, so a stale renderer copy can't overwrite a newer save. An addon not saved yet (an
+    install still running) is updated from the caller's copy and returned, but not saved. The
+    renderer copies the result back onto its addon objects by id and raises `syncError$`.
+- Addon storage moved out of `AddonController` into `AddonRepository`
+  (`app/services/addons/addon-repository.ts`), shared by both controllers. Addon folder
+  listing moved out of `WarcraftController` into `AddonFolderService`
+  (`app/services/warcraft/`), so services never depend on a controller.
+- Pure rules both sides need live in `src/common/addons/`: TOC selection
+  (`getTocForGameType2`), external-id collection and per-provider id validation (the Curse,
+  GitHub and Wago providers' `isValidAddonId` now read the same table; TukUI/WoWInterface in
+  `wowup-lib` keep their own copy), `getLatestFile`, `getFileTargetVersions`.
+- Still renderer-side on purpose: the per-installation rescan queue (it has to span the
+  provider step), `scanUpdate$`/`syncError$`/`scanError$` RxJS events, and the migrations
+  that need `provider.shouldMigrate`.
 
-## Phase 5 — Install / Remove Pipeline ⏳ not started
+## Phase 5 — Install / Remove Pipeline ✅ done (providers still renderer-side)
 
-- Move addon install/update/remove orchestration (currently
-  `src/app/services/addons/addon-install.service.ts` and the addon providers under
-  `src/app/addon-providers/`) into main.
-- Addon providers still make their own HTTP calls from the renderer today — decide
-  whether provider HTTP calls move to main as part of this phase or stay renderer-side
-  behind a thinner install pipeline.
+- `AddonInstallController` (`app/controllers/`) + main `AddonInstallService`
+  (`app/services/addons/`) expose two channels:
+  - `IPC_ADDON_INSTALL_FILE` takes a downloaded zip and the addon. Main backs up the installed
+    folders, unzips, copies the new folders into AddOns (restoring the backup if that fails), marks the
+    addon installed (version, folders, game versions, author/zip title from the tocs), collects toc
+    external ids, carries over the original addon's ids on a provider switch, saves it, drops Unknown
+    addons left on the same folders, and deletes the zip and unzip folder. Backing up / installing
+    progress comes back on `IPC_ADDON_INSTALL_PROGRESS`. Main works from its saved copy where it has
+    one: the folders to back up come from it, and the user's settings (auto-update, notifications,
+    channel) are read again just before the save, so a change made during the download or install is
+    kept. The zip must sit in main's `downloads` folder, or main refuses it and deletes nothing.
+  - `IPC_ADDON_ADD_EXTERNAL_ID` adds one provider id to a saved addon, so the renderer's hub id
+    lookup doesn't write the whole record back.
+  - `IPC_ADDON_REMOVE` deletes an addon's folders and record (main's saved copy wins over the
+    caller's), plus its dependencies when asked.
+- Split around the two steps that still need a provider: the **download** stays in the renderer,
+  because a failed download is retried after the provider re-syncs the addon for a fresh url, and the
+  **hub id lookup** after an install (a Hub HTTP call) runs in the renderer once main returns.
+- Renderer `AddonInstallService` is now the install queue only (concurrency, `addonInstalled$` /
+  `installError$`, `onUpdate`, analytics, download + retry, hub id) behind
+  `AddonInstallApiService` (`src/app/services/api/`). `AddonService.removeAddon` keeps its
+  signature and emits `addonRemoved$` / analytics for every addon main removed.
+- `unzipFile` / `copyPath` moved out of `ipc-events.ts` into `app/file.utils.ts`, shared by the
+  legacy file channels and the install service. The download itself stays on the legacy
+  `IPC_DOWNLOAD_FILE_CHANNEL`.
+- `addon-rules.ts` gained the WowUp Hub id rule (Phase 4 had left it out, so Hub addons lost their
+  own id from `externalIds` and logged "Invalid provider id WowUpHub|…") and
+  `reconcileExternalIds`; the install service's duplicate copy of the external-id logic is gone.
 
-## Phase 6 — `ipc-events.ts` Cleanup ⏳ not started
+## Phase 5b — Addon Providers ✅ done
 
-- Once all domains have dedicated controllers, retire the legacy
-  `app/ipc-events.ts` grab-bag registry (or shrink it to only what genuinely doesn't
-  fit the controller pattern, e.g. window-chrome events).
+Done in three steps, each shippable on its own.
+
+### Step 1 — main HTTP, registry, renderer stand-ins, the simple providers ✅
+
+- [x] Main HTTP (`app/services/network/`): `HttpClient` on Electron's `net.fetch`, so requests keep
+      going through Chromium's network stack (proxy, certificates) as they did from the renderer; it
+      logs the same `[GET] url status ms` line the renderer's interceptor did. `HttpCircuitBreaker`
+      ports the opossum wrapper (404s don't trip it, `EOPENBREAKER` when open), and
+      `ProviderNetworkInterface` ports `GenericNetworkInterface` (default headers, 30 s cache).
+- [x] `AddonProviderRegistry` (`app/services/addon-providers/`) runs Zip, RaiderIO, WowUpCompanion,
+      the hub, TukUI and WowInterface. The hub requests carry the install id from main's
+      preferences. `AddonProviderController` exposes `IPC_ADDON_PROVIDERS_INIT` (config in,
+      provider flags out), `IPC_ADDON_PROVIDERS_CALL` (one whitelisted provider method; never
+      rejects, a failure comes back serialized) and `IPC_ADDON_PROVIDERS_MATCH` (which providers
+      claim a url or protocol link).
+- [x] Config: main's build can't see which Angular environment file was picked (dev/prod,
+      wago/ow), so the renderer sends the provider settings in `IPC_ADDON_PROVIDERS_INIT` during
+      `loadProviders`. Temporary until main's build gets its own copy of the config.
+- [x] Renderer: `AddonProviderFactory` keeps its public API but holds a `RemoteAddonProvider`
+      stand-in for each moved provider, so `AddonService` and the components barely change. The
+      synchronous checks can't wait on ipc and became async on the factory:
+      `getAddonProviderForUri`, `getAddonProviderForProtocol` (both keep the providers' order across
+      main and renderer) and `shouldMigrate`. The stand-in throws if one is called on it directly.
+- [x] Errors: ipc keeps only an error's message, and callers branch on class and code, so main
+      serializes them (`serializeProviderError`, also the errors inside `getAll`/`getAllBatch`
+      results) and the renderer rebuilds `HttpErrorResponse`, `GenericProviderError`,
+      `SourceRemovedAddonError` and the breaker's `code` (`reviveProviderError`).
+- [x] wowup-lib-core used `window.URL` in the hub's featured list and protocol parsing and in
+      TukUI's addon list; now plain `URL`, which works in both processes. Without it TukUI's
+      `getAll` failed in main and reported every TukUI addon as removed from TukUI.
+- [x] Removed from the renderer: the Zip, RaiderIO and Companion providers,
+      `GenericNetworkInterface`, `mem-cache`.
+- [x] The hub, TukUI and WowInterface providers moved out of wowup-lib-core into
+      `app/services/addon-providers/` (with `NetworkInterface`), since main was their only user.
+      The lib keeps the models, the `AddonProvider` base and the helpers both processes use. Their
+      live-API tests became `*.live-test.ts`, run with `npm run test:main:live` and kept out of
+      `npm run test:main`, which stays offline.
+
+### Step 2 — the providers with tokens ✅
+
+- [x] GitHub runs in main on `HttpClient`; it reads the personal access token from the sensitive
+      store directly. `HttpError` now carries the response headers for its rate-limit check.
+- [x] Curse runs in main. `CurseForgeClient` (`app/services/network/`) replaces curseforge-v2's
+      `CFV2Client`, which runs on axios and so would skip the system proxy in main; it covers the 8
+      endpoints the provider uses and, like the old client, returns http errors as results. Only the
+      package's types and enums are still used.
+- [x] Wago runs in main. It takes the ad page's token from `wago-handler.onToken`, watches the
+      sensitive store for the access key (`onDidChange`), clears its token on `powerMonitor`
+      resume, and reloads the ad view itself on a failed request, so the renderer's
+      `UiMessageService` (`ad-frame-reload`) is gone. `AddonProviderRegistry.dispose` drops
+      those listeners when the renderer re-inits or the window closes.
+- [x] The renderer still sends the config (now also the Wago and CurseForge settings) in
+      `IPC_ADDON_PROVIDERS_INIT`. Descriptors carry each provider's ad page
+      (`getAdPageParams`).
+- [x] Errors: the GitHub and install errors (`GitHubLimitError`, the GitHub fetch errors,
+      `AssetMissingError`, `NoReleaseFoundError`, `TocNotFoundError`) moved to
+      `src/common/errors/` so main can throw them; they cross ipc and are rebuilt like the others.
+- [x] The renderer factory holds only stand-ins, in main's order; URL and protocol lookups ask main.
+
+### Step 3 — scan and install join up in main ✅
+
+- [x] A scan is one call, `IPC_ADDON_SCAN` (`AddonSyncService.scan`): main lists and fingerprints
+      the folders, lets each enabled provider match what no provider before it claimed, and builds
+      the addon list. The complete-scan channel is gone; prepare stays for the debug log's
+      fingerprint dump.
+- [x] The rescan queue (#1561) moved with it: one saving scan per installation at a time, callers
+      meanwhile share the next one, `joinRunning` shares the running one (`getAddons` with
+      nothing saved).
+- [x] Main reads the user's on/off choice per provider from the preference store
+      (`ADDON_PROVIDERS_KEY`, `AddonProviderRegistry.isEnabled`); the renderer still writes it.
+- [x] Scan progress and provider failures reach the renderer as `IPC_ADDON_SCAN_EVENT`, once per
+      scan however many callers share it, and become `scanUpdate$` / `scanError$` as before.
+- [x] Install is one call, `IPC_ADDON_INSTALL` (`AddonInstaller`): main downloads the addon with
+      the provider's auth, retries a failed download up to 3 times after re-syncing the addon for
+      a fresh url, installs it, and looks up its hub id. The renderer keeps the queue (3 at a time,
+      pending/progress states) and the analytics. The phases now include `downloading` and
+      `retry`; a retry shows on the grids only, as before.
+- [x] A failed download no longer leaves its partial zip in the downloads folder.
+- [x] Removed: the renderer's `DownloadService` and main's `IPC_DOWNLOAD_FILE_CHANNEL` handler,
+      `AddonScanApiService` and `AddonFingerprintController` (`IPC_ADDON_GET_SCAN_RESULTS`), the
+      add-external-id channel, and the renderer install retry's re-sync hook.
+- Left in the renderer: the sync orchestration. `syncAllClients` still calls each provider's
+  `getAll` / `getAllBatch` through the stand-ins and hands main the answer (`applySync`), and
+  search, install-from-url and dependency lookups still go through the stand-ins.
+
+## Phase 6 — `ipc-events.ts` Cleanup ✅ done
+
+- [x] Removed what nothing called: the `webview-log` / `webview-error` listeners, the
+      `will-download` session hook (nothing ever registered a download with it), and the
+      home dir, readdir, read-file-buffer, latest-dir-update-time, list-dir-recursive and
+      zip-list-files channels with their `FileService` wrappers (plus `removeAll` /
+      `removeAllSafe`).
+- [x] `app/ipc-events.ts` is gone. Its handlers moved, channel names unchanged, into:
+  - `FileSystemController`: `FileService`'s file access; the listing and stat logic lives in
+    `FileSystemService` (`app/services/files/`), which `AddonFolderService` now shares
+    instead of keeping its own copy;
+  - `WindowController`: titlebar buttons, focus, zoom;
+  - `AppController`: versions, locale, launch args, pending open urls (`app/pending-open-urls.ts`),
+    login item, protocol client, badge, dialogs, shell, clipboard, base64, restart/quit, and
+    the overwolf consent window;
+  - `MenuController`: app menu and tray; `PushController`: push registration.
+- [x] Every handler now registers through `ipcHandle`, so a recreated window replaces them
+      instead of throwing on a second `ipcMain.handle`.
+- Still registered outside a controller: the store channels (`app/stores.ts`), the updater
+  (`app/app-updater.ts`), the wago token listener (`app/wago-handler.ts`) and the wago cmp
+  close event.
+- Not in any phase yet: the renderer still imports Node (`fs`, `path`, …) directly because
+  `nodeIntegration` is on, and sync orchestration still runs there (see Phase 5b step 3).
+  Both have to move before the UI can be swapped.

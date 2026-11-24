@@ -7,6 +7,7 @@ class WagoHandler {
   private _tokenTimer: ReturnType<typeof setTimeout> | undefined = undefined;
   private _webContents: WebContents | undefined = undefined;
   private _tokenMap = new Map<number, boolean>();
+  private readonly _tokenListeners = new Set<(token: string) => void>();
 
   public constructor() {
     powerMonitor.on("resume", () => {
@@ -16,6 +17,12 @@ class WagoHandler {
     });
   }
 
+  /** Called with each api token the ad page hands over; returns the unsubscribe */
+  public onToken(listener: (token: string) => void): () => void {
+    this._tokenListeners.add(listener);
+    return () => this._tokenListeners.delete(listener);
+  }
+
   public initialize(window: BrowserWindow): void {
     if (this._initialized) {
       return;
@@ -23,8 +30,7 @@ class WagoHandler {
 
     this._window = window;
 
-    // Just forward the token event out to the window
-    // this is not a handler, just a passive listener
+    // Hand the token to the wago provider in main; this is not a handler, just a passive listener
     ipcMain.on("wago-token-received", (evt, token: string) => {
       if (typeof token !== "string" || token.length < 20) {
         log.warn(`[wago-handler] malformed token detected: ${token.length}`);
@@ -40,7 +46,9 @@ class WagoHandler {
 
       this._tokenMap.set(this._webContents?.id ?? 0, true);
       this.stopTimeout();
-      this._window?.webContents?.send("wago-token-received", token);
+      for (const listener of this._tokenListeners) {
+        listener(token);
+      }
     });
   }
 
@@ -86,12 +94,14 @@ class WagoHandler {
   };
 
   private readonly onWillNavigate = (evt: Electron.Event, url: string) => {
-    log.debug("[wago-handler] will-navigate", url);
+    // The ad page reloads itself every few minutes, which arrives here as a navigation to its own
+    // URL. That is routine, so only a navigation we actually block is worth a line.
     if (this._webContents !== undefined && this._webContents.getURL() === url) {
-      log.debug(`[wago-handler] reload detected`);
-    } else {
-      evt.preventDefault(); // block the webview from navigating at all
+      return;
     }
+
+    log.debug("[wago-handler] blocked navigation", url);
+    evt.preventDefault(); // block the webview from navigating at all
   };
 
   private readonly onWindowOpenHandler = (details: Electron.HandlerDetails): { action: "deny" } => {
