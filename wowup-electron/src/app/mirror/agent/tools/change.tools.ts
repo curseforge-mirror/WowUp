@@ -140,6 +140,11 @@ interface Dependency {
   line: AddonLine;
   /** The externalId its record gets (the provider's own id for it) */
   recordExternalId: string;
+  /**
+   * Its latest file has no download link (CurseForge, when the author turns off third-party downloads): WowUp saves
+   * its record, then the install fails and writes nothing. The record is still the change's, for rollback to remove.
+   */
+  recordOnly?: boolean;
 }
 
 /** A dependency as a release (AddonSearchResultFile) or an installed addon's record (Addon) lists it */
@@ -441,9 +446,10 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
 
   /**
    * One required dependency as WowUp's install finds it: the latest file at the release's provider for the
-   * installation's channel, with the folders it writes learned like a release's. Undefined when WowUp can't install
-   * it either (provider not available, no such addon, no file or no download link); a lookup or download that fails
-   * throws.
+   * installation's channel, with the folders it writes learned like a release's. Undefined when WowUp finds nothing
+   * to install (provider not available, no such addon, no file). A file without a download link is a record-only
+   * dependency: WowUp saves its record before its install fails, so it writes no folder and pulls in none of its own.
+   * A lookup or download that fails throws.
    */
   const lookupDependency = async (
     installation: WowInstallation,
@@ -463,8 +469,18 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
       throw new Error(`Could not look up ${providerName} ${externalId}, ${along}: ${message(e)}.`);
     }
     const file = result ? getLatestFile(result, installation.defaultAddonChannelType) : undefined;
-    if (!result || !file?.downloadUrl) {
+    if (!result || !file) {
       return undefined;
+    }
+    const line = {
+      name: result.name,
+      provider: result.providerName || providerName,
+      externalId,
+      version: file.version,
+    };
+    const recordExternalId = String(result.externalId ?? externalId);
+    if (!file.downloadUrl) {
+      return { dependency: { line: { ...line, folders: [] }, recordExternalId, recordOnly: true }, requires: [] };
     }
     let folders: string[];
     try {
@@ -476,19 +492,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
     } catch (e) {
       throw new Error(`${message(e)} ${result.name} is ${along}.`);
     }
-    return {
-      dependency: {
-        line: {
-          name: result.name,
-          provider: result.providerName || providerName,
-          externalId,
-          version: file.version,
-          folders,
-        },
-        recordExternalId: String(result.externalId ?? externalId),
-      },
-      requires: requiredOf(file.dependencies),
-    };
+    return { dependency: { line: { ...line, folders }, recordExternalId }, requires: requiredOf(file.dependencies) };
   };
 
   /**
@@ -768,15 +772,26 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
 
   /** A preview with the dependencies WowUp installs along noted */
   const withDependencies = (preview: ChangePreview, dependencies: Dependency[]): ChangePreview => {
-    if (dependencies.length === 0) {
+    const list = (some: Dependency[]) => some.map((d) => `${d.line.provider} ${d.line.externalId}`).join(", ");
+    const count = (some: Dependency[]) =>
+      some.length === 1 ? "1 required dependency" : `${some.length} required dependencies`;
+    const installs = dependencies.filter((d) => !d.recordOnly);
+    const recordsOnly = dependencies.filter((d) => d.recordOnly);
+    const notes: string[] = [];
+    if (installs.length > 0) {
+      notes.push(`may also install ${count(installs)}: ${list(installs)}`);
+    }
+    if (recordsOnly.length > 0) {
+      const what = `${count(recordsOnly)} it can't download (no download link)`;
+      notes.push(`WowUp also saves a record for ${what}: ${list(recordsOnly)}`);
+    }
+    if (notes.length === 0) {
       return preview;
     }
-    const list = dependencies.map((d) => `${d.line.provider} ${d.line.externalId}`).join(", ");
-    const what = dependencies.length === 1 ? "1 required dependency" : `${dependencies.length} required dependencies`;
     return {
       ...preview,
-      action: `${preview.action}; may also install ${what}: ${list}`,
-      alsoInstalls: dependencies.map((d) => d.line),
+      action: [preview.action, ...notes].join("; "),
+      ...(installs.length > 0 ? { alsoInstalls: installs.map((d) => d.line) } : {}),
     };
   };
 

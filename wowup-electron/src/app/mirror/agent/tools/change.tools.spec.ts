@@ -1435,5 +1435,46 @@ describe("change tools", () => {
       expect(noted(r).sort()).toEqual(["a1-scanned", "wowup1-scanned"]);
       expect(out.changedByWowUp).toBeUndefined();
     });
+
+    it("a dependency WowUp can't download still leaves a record, and that record is the call's", async () => {
+      // CurseForge gives no download link when the author disables third-party downloads
+      const requiresNoLink = searchResult({ files: [file({ dependencies: [{ externalAddonId: "502", type: 2 }] })] });
+      const noLink = searchResult({
+        name: "LibNoLink",
+        externalId: "502",
+        files: [file({ externalId: "n1", version: "1.0", folders: ["LibNoLink"], downloadUrl: "" })],
+      });
+      const p = make({ results: { "12345": requiresNoLink, "502": noLink } });
+      const preview: any = await p.tools.install_addon(
+        { provider: "Curse", externalId: "12345", preview: true },
+        p.ctx,
+      );
+      // it writes no folder, so it is no dependency the install pulls in, but the preview says WowUp saves its record
+      expect(preview.alsoInstalls).toBeUndefined();
+      expect(preview.foldersReplaced).toEqual([]);
+      expect(preview.action).toMatch(/saves a record .*can't download.*Curse 502/);
+
+      const m = make({ results: { "12345": requiresNoLink, "502": noLink } });
+      m.addonService.installAddon.and.callFake(async (a: any) => {
+        m.addRecord({ ...a, installedVersion: a.latestVersion, installedFolderList: ["TipTac", "TipTacOptions"] });
+        // WowUp's installDependencies saves the record, then its install fails on the missing link
+        m.addRecord(
+          rec({
+            id: "dep2",
+            name: "LibNoLink",
+            externalId: "502",
+            installedVersion: undefined,
+            installedFolderList: [],
+            downloadUrl: "",
+          }),
+        );
+      });
+
+      const out: any = await m.tools.install_addon({ provider: "Curse", externalId: "12345" }, m.ctx);
+
+      expect(noted(m)).toEqual(["new1", "dep2"]);
+      expect(out.changedByWowUp).toBeUndefined();
+      expect(m.backupService.create.calls.mostRecent().args[3]).toEqual(["TipTac", "TipTacOptions"]);
+    });
   });
 });
