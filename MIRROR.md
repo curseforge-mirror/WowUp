@@ -1,20 +1,24 @@
 # curseforge-mirror/WowUp
 
-WowUp with the CurseForge provider back, no ads and no tracking. It follows upstream WowUp releases and is currently based on upstream 2.25.5.
+WowUp with the CurseForge provider back, no ads and no tracking. It follows upstream WowUp releases. This is the `beta`
+branch: upstream's beta, 2.26.0-beta.1 (`develop`), merged with `mirror` and with agent control (below). `mirror` itself
+is based on upstream 2.25.5.
 
 ## What's different
 
-Every fork change is listed here. Upstream files only carry small hooks, so merges stay cheap.
+Every fork change is listed here. Upstream files only carry small hooks, so merges stay cheap. Since 2.26 the addon
+providers, scans and installs run in the main process (`wowup-electron/app/`); the renderer (`wowup-electron/src/`) keeps
+stand-ins that call them over IPC.
 
 | Change | Where |
 | :--- | :--- |
-| CurseForge provider built into the normal (wago) flavor, running on your own API key: Options > Addons > CurseForge API Key. Off until a key is set. | `wowup-electron/src/app/mirror/mirror.ts`, `curse-addon-provider.ts` (`setApiKey`), the options addon section template |
-| No ad space is ever requested. Wago's public token comes from its ad page, so Wago runs only with a personal Wago access key (Options > Addons). | `mirror.ts` (`MIRROR_ADS_ENABLED`), `session.service.ts` |
+| CurseForge provider built into the normal (wago) flavor, running on your own API key: Options > Addons > CurseForge API Key. Off until a key is set. The renderer puts the key in the provider config it starts main's providers with (`IPC_ADDON_PROVIDERS_INIT`), and starts them again when the key changes; main keeps a keyless CurseForge out of scans and installs, and scans fingerprint folders for CurseForge too. | `wowup-electron/src/app/mirror/mirror.ts` (`mirrorProviderConfig`, `applyMirrorProviderRules`, hooked into `src/app/services/addons/addon.provider.factory.ts`), `wowup-electron/app/mirror/providers.ts` (`mirrorAllowsProvider`, hooked into `isEnabled` in `app/services/addon-providers/addon-provider-registry.ts`; `MIRROR_CURSEFORGE_PROVIDER` in `app/controllers/index.ts`), `src/common/mirror/provider-keys.ts`, the options addon section template |
+| No ad space is ever requested. Wago's public token comes from its ad page, so Wago runs only with a personal Wago access key (Options > Addons). | `src/app/mirror/mirror.ts` (`MIRROR_ADS_ENABLED`), `src/app/services/session/session.service.ts`; main keeps a keyless Wago off in `app/mirror/providers.ts` |
 | The main process cancels requests to ad, consent and telemetry hosts. | `wowup-electron/app/mirror/block-ads.ts` |
 | The app updates from this repo's GitHub releases. Remote bundle updates are off and the shell trusts only our bundle key (`mirror-2026-a`). | `wowup-shell/scripts/set-flavor.js`, `scripts/build-shell.js`, `src/bundle-keys.ts` |
 | Installers are unsigned (no WowUp LLC publisher pin), so Windows warns on first install. | `electron-build/electron-builder.json`, `electron-build/sign-windows.js` |
-| Installing from a CurseForge link looks the project up by its exact slug. Upstream searches the slug's first word and checks one page of results, which misses most Forever add-ons (thousands start with "forever"). | `curse-addon-provider.ts` (`searchBySlug`, `getAddonBySlug`) |
-| GitHub update checks run 8 repositories at a time (upstream: 3), reuse each response for 2 minutes so a repository installed in several WoW installs is fetched once, and read `release.json` through the API asset endpoint instead of the website's download link (about 10 s per file). One check of 218 GitHub add-ons across 4 installs went from about 6 minutes to about 12 seconds. | `github-addon-provider.ts` (`getWithRateLimit`, `getReleaseMetadata`, `GET_ALL_CONCURRENCY`) |
+| Installing from a CurseForge link looks the project up by its exact slug. Upstream searches the slug's first word and checks one page of results, which misses most Forever add-ons (thousands start with "forever"). | `wowup-electron/app/services/addon-providers/curse-addon-provider.ts` (`searchBySlug`, `getAddonBySlug`) |
+| GitHub update checks run 8 repositories at a time (upstream: 3), reuse each response for 2 minutes so a repository installed in several WoW installs is fetched once, and read `release.json` through the API asset endpoint instead of the website's download link (about 10 s per file). One check of 218 GitHub add-ons across 4 installs went from about 6 minutes to about 12 seconds. | `wowup-electron/app/services/addon-providers/github-addon-provider.ts` (`getWithRateLimit`, `getReleaseMetadata`, `GET_ALL_CONCURRENCY`) |
 
 Keys never go in git or in builds. The app stores them in `%APPDATA%\WowUp\sensitive.json`, a plain JSON file.
 
@@ -24,6 +28,7 @@ Keys never go in git or in builds. The app stores them in `%APPDATA%\WowUp\sensi
 git fetch upstream
 git checkout master && git merge --ff-only upstream/master && git push origin master
 git checkout mirror && git merge master && git push origin mirror
+git checkout beta && git merge upstream/develop && git merge mirror && git push origin beta
 ```
 
 Conflicts, if any, land on the hook lines listed above. Keep both sides.
@@ -74,7 +79,7 @@ Connecting, using the **Copy setup** buttons in Options:
 - **Claude Desktop**: merge the copied JSON (`mcp-remote` via `npx`) into `claude_desktop_config.json`.
 - **Other apps**: the copied JSON (just the `url`) fits any client that speaks streamable HTTP.
 
-Code lives in `wowup-electron/app/mirror/agent/` (main process: HTTP server) and `wowup-electron/src/app/mirror/agent/` (renderer: tools, backups, Options block). Hook points into upstream files:
+Code lives in `wowup-electron/app/mirror/agent/` (main process: HTTP server, and the sandbox downloads, since 2.26 only downloads in main) and `wowup-electron/src/app/mirror/agent/` (renderer: tools, backups, Options block). Hook points into upstream files:
 
 | File | Hook |
 | :--- | :--- |
