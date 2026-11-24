@@ -144,7 +144,8 @@ record installed then has as provider and externalId or among its externalIds (f
 it removes first), and theirs in turn. Each one's folders come from the provider's file listing, or for a placeholder
 or empty listing (GitHub, Zip, Wago, WowInterface) from a sandbox download, a few at a time with WowUp's retries. The
 backup copies those folders too, with the records that claim them; previews list the dependencies under `alsoInstalls`
-with their folders and count the ones on disk in `foldersReplaced`. When a dependency's folders can't be learned, a
+with their folders, count the ones on disk in `foldersReplaced`, and list under `remove` the unmatched records WowUp's
+folder reconcile drops after each install, a dependency's included. When a dependency's folders can't be learned, a
 single change fails before its backup with nothing changed, and a batch (`update_addons`, `import_addons`) leaves that
 target out, as it does for a release it can't download. A dependency whose latest file has no download link
 (CurseForge, when the author turns off third-party downloads) writes nothing, but WowUp still saves its record before

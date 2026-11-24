@@ -798,7 +798,10 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
   /** A result's warnings, when there are any */
   const withWarnings = (warnings: string[]): { warnings?: string[] } => (warnings.length > 0 ? { warnings } : {});
 
-  /** Records WowUp's install reconcile drops: unmatched ones claiming a folder the release writes */
+  /**
+   * Records WowUp's install reconcile drops: unmatched ones claiming a folder the release writes. It runs after each
+   * install, a dependency's too, so previews pass every folder the change writes.
+   */
   const droppedUnknowns = (installed: Addon[], folders: string[], except?: Addon): Addon[] =>
     installed.filter(
       (a) => a.id !== except?.id && a.providerName === ADDON_PROVIDER_UNKNOWN && overlaps(foldersOf(a), folders),
@@ -884,9 +887,9 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
           action: `install_addon ${plan.line.provider} ${plan.line.externalId} ${plan.line.name} ${ver(plan.line.version)}${plan.pinned ? " (pinned: marked ignored)" : ""}`,
           installation: nameOf(installation),
           add: [plan.line],
-          remove: droppedUnknowns(installed, folders).map((a) => lineOf(a)),
+          remove: droppedUnknowns(installed, written).map((a) => lineOf(a)),
           foldersReplaced: onDisk(written, disk),
-          settingsCarryOver: installCarryOver(folders, disk, droppedUnknowns(installed, folders)),
+          settingsCarryOver: installCarryOver(written, disk, droppedUnknowns(installed, written)),
         };
         return withDependencies(preview, dependencies);
       }
@@ -1025,7 +1028,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
           add: targets.map((a) => ({ ...lineOf(a, a.latestVersion), folders: foldersFor(a) })),
           remove: [
             ...targets.map((a) => lineOf(a)),
-            ...others(droppedUnknowns(installed, allNew)).map((a) => lineOf(a)),
+            ...others(droppedUnknowns(installed, written)).map((a) => lineOf(a)),
           ],
           foldersReplaced: onDisk([...targets.flatMap(foldersOf), ...written], disk),
           settingsCarryOver: combineCarryOver(targets.map((a) => carryOver(foldersOf(a), foldersFor(a)))),
@@ -1165,7 +1168,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
           action: `replace_addon ${old.name} ${ver(old.installedVersion)} with ${plan.line.provider} ${plan.line.externalId} ${plan.line.name} ${ver(plan.line.version)}${plan.pinned ? " (pinned: marked ignored)" : ""}`,
           installation: nameOf(installation),
           add: [plan.line],
-          remove: [lineOf(old), ...droppedUnknowns(installed, folders, old).map((a) => lineOf(a))],
+          remove: [lineOf(old), ...droppedUnknowns(installed, written, old).map((a) => lineOf(a))],
           foldersReplaced: onDisk([...foldersOf(old), ...written], disk),
           settingsCarryOver: carryOver(foldersOf(old), folders),
         };
@@ -1239,7 +1242,7 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
           action: `switch_provider ${addon.name}: ${addon.providerName ?? ""} ${addon.externalId ?? ""} -> ${ext.providerName} ${ext.id} (installs ${ver(plan.line.version)})`,
           installation: nameOf(installation),
           add: [plan.line],
-          remove: [lineOf(addon)],
+          remove: [lineOf(addon), ...droppedUnknowns(installed, written, addon).map((a) => lineOf(a))],
           foldersReplaced: onDisk(written, disk),
           settingsCarryOver: carryOver(foldersOf(addon), folders),
         };
@@ -1512,9 +1515,9 @@ export function createChangeTools(deps: ChangeDeps): AgentToolSet {
           action,
           installation: nameOf(installation),
           add: lines,
-          remove: droppedUnknowns(installed, folders).map((a) => lineOf(a)),
+          remove: droppedUnknowns(installed, written).map((a) => lineOf(a)),
           foldersReplaced: onDisk(written, disk),
-          settingsCarryOver: installCarryOver(folders, disk, droppedUnknowns(installed, folders)),
+          settingsCarryOver: installCarryOver(written, disk, droppedUnknowns(installed, written)),
         };
         return withDependencies(preview, dependencies);
       }

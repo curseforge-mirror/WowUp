@@ -1285,6 +1285,65 @@ describe("change tools", () => {
       ]);
     });
 
+    it("previews list the unmatched records WowUp drops for the folders they write", async () => {
+      // a hand-installed LibFoo: WowUp's folder reconcile after LibStack's install drops its Unknown record
+      const handLib = rec({
+        id: "u1",
+        name: "LibFoo",
+        providerName: "Unknown",
+        externalId: "",
+        installedFolderList: ["LibFoo"],
+      });
+      const tipTac = rec({
+        id: "t1",
+        name: "TipTac",
+        providerName: "Wago",
+        externalId: "w9",
+        latestVersion: "2.0",
+        downloadUrl: "https://wago.test/w9.zip",
+        installedFolderList: ["TipTac"],
+        dependencies: req("w500"),
+      });
+      const old = rec({
+        id: "a1",
+        name: "TipTac Classic",
+        installedFolderList: ["TipTac"],
+        externalIds: [{ providerName: "Wago", id: "w9" }],
+      });
+      const removed = (preview: any) => preview.remove.map((l: any) => l.name);
+      const onDiskToo = [...disk, "LibFoo"];
+
+      const i = make({ records: [other, handLib], disk: onDiskToo, results, zips });
+      const installed: any = await i.tools.install_addon({ provider: "Wago", externalId: "w9", preview: true }, i.ctx);
+      expect(removed(installed)).toEqual(["LibFoo"]);
+      // it overwrites LibStub, LibFoo and LibBar, which are there already, and adds TipTac
+      expect(installed.settingsCarryOver).toBe("partial");
+
+      const r = make({ records: [old, other, handLib], disk: [...onDiskToo, "TipTac"], results, zips });
+      const replaced: any = await r.tools.replace_addon(
+        { addonId: "a1", provider: "Wago", externalId: "w9", preview: true },
+        r.ctx,
+      );
+      expect(removed(replaced)).toEqual(["TipTac Classic", "LibFoo"]);
+
+      const s = make({ records: [old, other, handLib], disk: [...onDiskToo, "TipTac"], results, zips });
+      const switched: any = await s.tools.switch_provider({ addonId: "a1", provider: "Wago", preview: true }, s.ctx);
+      expect(removed(switched)).toEqual(["TipTac Classic", "LibFoo"]);
+
+      const u = make({ records: [tipTac, other, handLib], disk: [...onDiskToo, "TipTac"], results, zips });
+      const updated: any = await u.tools.update_addons({ addonIds: ["t1"], preview: true }, u.ctx);
+      expect(removed(updated)).toEqual(["TipTac", "LibFoo"]);
+
+      const m = make({ records: [other, handLib], disk: onDiskToo, results, zips });
+      const json = JSON.stringify({
+        client_type: "ClassicEra",
+        addons: [{ id: "w9", name: "TipTac", provider_name: "Wago" }],
+      });
+      const imported: any = await m.tools.import_addons({ text: json, preview: true }, m.ctx);
+      expect(removed(imported)).toEqual(["LibFoo"]);
+      expect(imported.settingsCarryOver).toBe("partial");
+    });
+
     it("import_addons backs up the ones its addons require", async () => {
       const m = make({ records: [other], disk, results, zips });
       m.brokerService.installImportSummary.and.callFake(async () => {
